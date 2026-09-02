@@ -34,7 +34,22 @@
       "Bash(curl -s -b /tmp/oj_ai_ck.txt http://127.0.0.1:8321/api/ai/problem-tasks/1)",
       "Bash(pkill -f \"uvicorn app.main:app --port 8321\")",
       "Bash(pkill -f mock_model.py)",
-      "Bash(kill 42768)"
+      "Bash(kill 42768)",
+      "Bash(node --check static/js/views/ai.js)",
+      "Bash(rm -f /tmp/oj_jar)",
+      "Bash(curl -s -c /tmp/oj_jar -X POST localhost:8000/api/auth/login -H 'Content-Type: application/json' -d '{\"username\":\"admin\",\"password\":\"admintestpassword\"}')",
+      "Bash(curl -s -b /tmp/oj_jar localhost:8000/api/ai/model-pricing)",
+      "Bash(.venv/bin/python -c \"import json,sys; d=json.load\\(sys.stdin\\)['data']; print\\('code ok, presets:', len\\(d['presets']\\), '| price_unit:', d['price_unit']\\); print\\('first:', d['presets'][0]\\); print\\('last:', d['presets'][-1]\\)\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" localhost:8000/api/ai/model-pricing)",
+      "WebSearch",
+      "Bash(.venv/bin/python -c ' *)",
+      "Bash(curl -s -b /tmp/oj_jar -o /dev/null -w '%{http_code}' localhost:8000/api/ai/model-pricing)",
+      "Bash(echo \"model-pricing \\(已删除, 期望404\\): $\\(curl -s -b /tmp/oj_jar -o /dev/null -w '%{http_code}' localhost:8000/api/ai/model-pricing\\)\")",
+      "Bash(curl -s -b /tmp/oj_jar -o /dev/null -w '%{http_code}' localhost:8000/api/ai/model-config)",
+      "Bash(.venv/bin/python -)",
+      "Bash(.venv/bin/pytest -q tests/test_ai.py::test_events_sse tests/test_ai.py::test_cancel_sse_notifies)",
+      "Bash(.venv/bin/pytest -q tests/test_ai.py::test_cancel_sse_notifies)",
+      "Bash(.venv/bin/pytest -q tests/test_ai.py::test_cancel_sse_notifies tests/test_ai.py::test_events_sse)"
     ]
   }
 }

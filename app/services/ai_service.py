@@ -18,7 +18,6 @@
 import asyncio
 import json
 import re
-from datetime import datetime
 
 import httpx
 from cryptography.fernet import Fernet
@@ -103,8 +102,9 @@ class ModelConfigStore:
             data = {
                 "provider_url": cfg.provider_url.strip(),
                 "model": cfg.model.strip(),
-                "input_price": cfg.input_price if cfg.input_price is not None else 0.0,
-                "output_price": cfg.output_price if cfg.output_price is not None else 0.0,
+                # 价格为可选：None 表示未手动配置，费用按 provider 返回的费用自动计算
+                "input_price": cfg.input_price,
+                "output_price": cfg.output_price,
                 "price_unit": cfg.price_unit or DEFAULT_PRICE_UNIT,
                 "api_key_encrypted": Fernet(key).encrypt(cfg.api_key.strip().encode()).decode(),
             }
@@ -165,11 +165,14 @@ def parse_problem(content: str) -> dict:
 
 
 def build_usage(cfg: dict, raw: dict, content: str, prompt: str) -> dict:
-    """Token 用量与费用统计（api.md 费用公式）。
+    """Token 用量与费用统计（api.md 费用公式 + advance.md 计价依据透明）。
 
-    模型接口不提供用量时按 字符数/4 估算，estimated=true 由前端/文档标注。
+    费用来源优先级：
+    1. provider：模型接口在 usage 中直接返回费用（usage.cost）；
+    2. config：模型配置中填写的 input_price/output_price；
+    3. unknown：未填价格且接口未返回费用，cost 为 None（页面明确标注）。
+    用量缺失时按 字符数/4 估算，estimated=true 标注。
     """
-    unit = cfg["price_unit"] or DEFAULT_PRICE_UNIT
     inp, out = raw.get("prompt_tokens"), raw.get("completion_tokens")
     estimated = inp is None or out is None
     if inp is None:
@@ -177,18 +180,38 @@ def build_usage(cfg: dict, raw: dict, content: str, prompt: str) -> dict:
     if out is None:
         out = max(1, len(content) // 4)
     inp, out = int(inp), int(out)
-    cost = round(inp / unit * cfg["input_price"] + out / unit * cfg["output_price"], 6)
-    return {
+
+    base = {
         "input_tokens": inp,
         "output_tokens": out,
         "total_tokens": inp + out,
-        "cost": cost,
-        "currency": CURRENCY,
-        "price_unit": unit,
-        "input_price": cfg["input_price"],
-        "output_price": cfg["output_price"],
         "estimated": estimated,
     }
+
+    # 1. 提供方直接计费
+    if isinstance(raw.get("cost"), (int, float)):
+        return {
+            **base,
+            "cost": round(float(raw["cost"]), 6),
+            "currency": raw.get("currency") or "USD",
+            "price_source": "provider",
+        }
+
+    # 2. 用户手动配置价格
+    if cfg.get("input_price") is not None and cfg.get("output_price") is not None:
+        unit = cfg["price_unit"] or DEFAULT_PRICE_UNIT
+        return {
+            **base,
+            "cost": round(inp / unit * cfg["input_price"] + out / unit * cfg["output_price"], 6),
+            "currency": CURRENCY,
+            "price_unit": unit,
+            "input_price": cfg["input_price"],
+            "output_price": cfg["output_price"],
+            "price_source": "config",
+        }
+
+    # 3. 无价格信息
+    return {**base, "cost": None, "currency": CURRENCY, "price_source": "unknown"}
 
 
 def _sanitize(msg: str, secret: str | None) -> str:
@@ -205,29 +228,49 @@ async def _request_model(cfg: dict, payload: dict) -> dict:
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(cfg["provider_url"], json=payload, headers=headers)
     if resp.status_code != 200:
-        raise RuntimeError(f"model api returned HTTP {resp.status_code}: {resp.text[:200]}")
+        hint = ""
+        if resp.status_code == 404:
+            hint = ("（provider_url 需指向完整的 OpenAI 兼容 chat/completions 接口地址，"
+                    "如 https://api.deepseek.com/chat/completions，不能只填域名）")
+        raise RuntimeError(f"model api returned HTTP {resp.status_code}: {resp.text[:200]}{hint}")
     return resp.json()
 
 
 async def _call_model(cfg: dict, prompt: str) -> tuple[dict, str]:
-    """调用 OpenAI 兼容 chat/completions 协议；返回 (usage, content)。"""
+    """调用 OpenAI 兼容 chat/completions 协议；返回 (usage, content)。
+
+    健壮性（api.md 要求处理模型调用失败）：
+    - max_tokens 取 8K（DeepSeek 等主流模型上限，避免长输出被截断为空）；
+    - 推理模型（模型名含 reasoner）不传 temperature（DeepSeek R1 不支持该参数）；
+    - 空输出自动重试一次（模型偶发）；仍为空时错误信息带 finish_reason 与排查提示。
+    """
     payload = {
         "model": cfg["model"],
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
-        "temperature": 0.3,
-        "max_tokens": 4096,
+        "max_tokens": 8192,
     }
-    data = await _request_model(cfg, payload)
-    try:
-        content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        raise RuntimeError("unexpected model response format")
-    if not isinstance(content, str) or not content.strip():
-        raise RuntimeError("model returned empty content")
-    return build_usage(cfg, data.get("usage") or {}, content, prompt), content
+    if "reasoner" not in cfg["model"].lower():
+        payload["temperature"] = 0.3
+
+    for attempt in (1, 2):
+        data = await _request_model(cfg, payload)
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            raise RuntimeError("unexpected model response format")
+        if isinstance(content, str) and content.strip():
+            return build_usage(cfg, data.get("usage") or {}, content, prompt), content
+        if attempt == 1:
+            continue   # 空输出：重试一次
+        reason = (data.get("choices") or [{}])[0].get("finish_reason")
+        if reason == "length":
+            hint = "（输出被 max_tokens 截断：请简化命题需求，或换用非推理模型如 deepseek-chat）"
+        else:
+            hint = "（请确认模型名为官方 API ID，如 DeepSeek 的 deepseek-chat / deepseek-reasoner）"
+        raise RuntimeError(f"model returned empty content (finish_reason={reason}){hint}")
 
 
 # ---- 任务编排 ----
@@ -256,9 +299,11 @@ async def _push(task_id: int, event: str, data: dict) -> None:
 
 async def _progress(task_id: int, progress: float, message: str) -> None:
     """更新任务进度：落库（轮询可见）+ 推送 SSE 事件。"""
+    if task_id in _cancelled:
+        return   # 已取消：不再落库/推送 running 事件，避免界面闪回
     async with SessionLocal() as db:
         t = await db.get(AiTask, task_id)
-        if t is not None and task_id not in _cancelled:
+        if t is not None:
             t.status = STATUS_RUNNING
             t.progress = progress
             await db.commit()
@@ -286,7 +331,25 @@ async def _run_task(task_id: int) -> None:
         prompt = build_prompt(requirement, reference)
 
         await _progress(task_id, 0.15, "正在调用模型…")
-        usage, content = await _call_model(cfg, prompt)
+        # 模型调用期间每 2s 推送一次进度（advance.md R3：
+        # 「执行期间界面应持续展示可观察的进度信息」，而非静默等待结果）
+        async def _ticker():
+            elapsed = 0.0
+            while task_id not in _cancelled:
+                await asyncio.sleep(2)
+                elapsed += 2
+                p = min(0.15 + elapsed / max(REQUEST_TIMEOUT, 1) * 0.5, 0.65)
+                await _progress(task_id, p, f"模型推理中（已 {int(elapsed)}s）…")
+
+        ticker = asyncio.create_task(_ticker())
+        try:
+            usage, content = await _call_model(cfg, prompt)
+        finally:
+            ticker.cancel()
+            try:
+                await ticker
+            except asyncio.CancelledError:
+                pass
 
         await _progress(task_id, 0.7, "模型已返回，正在解析校验…")
         problem = parse_problem(content)
@@ -326,6 +389,7 @@ async def _run_task(task_id: int) -> None:
         })
     finally:
         _tasks.pop(task_id, None)
+        _events.pop(task_id, None)   # 释放事件队列（订阅者持有的引用不受影响）
 
 
 async def create_task(user: User, body: AiTaskIn) -> AiTask:
@@ -400,6 +464,11 @@ async def cancel_task(user: User, task_id: int) -> str:
     task = _tasks.get(task_id)
     if task is not None:
         task.cancel()
+    # 立即向所有观察者推送终态（advance.md R3：界面明确展示任务已中断的状态；
+    # _run_task 被 cancel 后不再推送，避免与这里的 final 重复）
+    await _push(task_id, "final", {
+        "task_id": task_id, "status": STATUS_CANCELLED, "message": "任务已中断",
+    })
     return STATUS_CANCELLED
 
 

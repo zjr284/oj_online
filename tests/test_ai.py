@@ -247,6 +247,159 @@ async def test_invalid_model_output_and_secret_leak(client, monkeypatch):
     assert "***" in d["result"]["error"]
 
 
+async def test_empty_content_retry_and_hint(client, monkeypatch):
+    """模型返回空内容：自动重试一次；仍为空则报错并带排查提示。"""
+    import app.services.ai_service as svc
+    await _config(client)
+
+    async def run_once(responses):
+        calls = {"n": 0}
+
+        async def fake(*_args):
+            r = responses[min(calls["n"], len(responses) - 1)]
+            calls["n"] += 1
+            return r
+
+        monkeypatch.setattr(svc, "_request_model", fake)
+        resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "出一道题"})
+        return await _wait_task(client, resp.json()["data"]["task_id"])
+
+    empty = {"choices": [{"message": {"content": ""}}], "usage": FAKE_USAGE}
+    good = {"choices": [{"message": {"content": json.dumps(GENERATED, ensure_ascii=False)}}], "usage": FAKE_USAGE}
+    length = {"choices": [{"message": {"content": ""}, "finish_reason": "length"}], "usage": FAKE_USAGE}
+
+    # 第一次空、第二次正常 → 重试成功
+    d = await run_once([empty, good])
+    assert d["status"] == "done"
+
+    # 两次都空 → failed，提示检查官方模型 ID
+    d = await run_once([empty, empty])
+    assert d["status"] == "failed"
+    assert "empty content" in d["result"]["error"]
+    assert "deepseek-chat" in d["result"]["error"]
+
+    # 输出被 max_tokens 截断 → 专门提示
+    d = await run_once([length, length])
+    assert d["status"] == "failed"
+    assert "max_tokens" in d["result"]["error"]
+
+
+async def test_auto_pricing(client, monkeypatch):
+    """费用来源优先级：提供方返回费用 / 手动配置价格 / 无法确定。"""
+    await login(client, "admin", "admintestpassword")
+
+    async def new_task(model, usage=None, manual=None):
+        cfg = {
+            "provider_url": "https://api.example.com/v1/chat/completions",
+            "model": model,
+            "api_key": "sk-auto-1",
+        }
+        if manual is not None:
+            cfg.update(manual)
+        assert (await client.put("/api/ai/model-config", json=cfg)).status_code == 200
+        _mock_model(monkeypatch, usage=usage)
+        resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "出一道题"})
+        tid = resp.json()["data"]["task_id"]
+        return await _wait_task(client, tid)
+
+    # 1. 提供方返回费用 → 最优先
+    d = await new_task("some-model", usage={"prompt_tokens": 100, "completion_tokens": 200, "cost": 0.123456})
+    u = d["usage"]
+    assert u["price_source"] == "provider"
+    assert u["cost"] == 0.123456
+
+    # 2. 手动配置价格
+    d = await new_task("some-model", manual={"input_price": 1.0, "output_price": 2.0, "price_unit": 1000})
+    u = d["usage"]
+    assert u["price_source"] == "config"
+    assert u["cost"] == 0.5        # 100/1000*1 + 200/1000*2
+
+    # 3. 未填价格且接口未返回费用 → cost None + unknown 标注
+    d = await new_task("some-model")
+    u = d["usage"]
+    assert u["price_source"] == "unknown"
+    assert u["cost"] is None
+
+
+async def test_request_model_404_hint(client, monkeypatch):
+    """模型接口返回 404（如 provider_url 只填了域名）时给出明确提示。"""
+    import app.services.ai_service as svc
+
+    class FakeResp:
+        status_code = 404
+        text = ""
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
+        async def post(self, *a, **kw):
+            return FakeResp()
+
+    monkeypatch.setattr(svc.httpx, "AsyncClient", FakeClient)
+    try:
+        await svc._request_model({"provider_url": "https://api.deepseek.com", "api_key": "sk-x"}, {"messages": []})
+    except RuntimeError as e:
+        assert "HTTP 404" in str(e)
+        assert "/chat/completions" in str(e)   # 提示用户补全接口路径
+    else:
+        raise AssertionError("should raise RuntimeError")
+
+
+async def test_progress_continuous(client, monkeypatch):
+    """advance.md R3：模型调用期间进度持续推送，而非等任务完成才返回结果。"""
+    await _config(client)
+    _mock_model(monkeypatch, delay=4.6)
+
+    resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "出一道题"})
+    tid = resp.json()["data"]["task_id"]
+    async with client.stream("GET", f"/api/ai/problem-tasks/{tid}/events") as r:
+        text = (await r.aread()).decode()
+
+    # 模型推理期间 ticker 每 2s 推送一次：0.05/0.15/tick×2/0.7/0.9
+    assert text.count("event: progress") >= 5
+    assert "模型推理中" in text
+    assert "event: final" in text
+
+
+async def test_cancel_sse_notifies(client, monkeypatch):
+    """advance.md R3：中断后 SSE 立即推送 cancelled 终态（界面明确展示已中断）。
+
+    注：httpx 的 ASGITransport 打开流会阻塞到响应结束，无法并发 cancel，
+    故直接消费 SSE 生成器验证事件链路（浏览器中 EventSource 与 fetch 是独立连接）。
+    """
+    import app.services.ai_service as svc
+    await _config(client)
+    _mock_model(monkeypatch, delay=10)
+
+    resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "出一道题"})
+    tid = resp.json()["data"]["task_id"]
+    # 等任务进入 running（模型调用被 sleep 阻塞）
+    for _ in range(100):
+        d = (await client.get(f"/api/ai/problem-tasks/{tid}")).json()["data"]
+        if d["status"] == "running":
+            break
+        await asyncio.sleep(0.05)
+
+    state = (await client.get(f"/api/ai/problem-tasks/{tid}")).json()["data"]
+    stream = svc.sse_stream(state, tid)
+    first = await asyncio.wait_for(anext(stream), timeout=3)   # 首帧：当前状态
+    assert "event: state" in first and '"status": "running"' in first
+
+    resp = await client.put(f"/api/ai/problem-tasks/{tid}/cancel")
+    assert resp.status_code == 200
+    # cancel 后流应立即收到 cancelled 终态并结束（不推送则此读取超时失败）
+    frame = await asyncio.wait_for(anext(stream), timeout=3)
+    assert "event: final" in frame
+    assert '"status": "cancelled"' in frame or '"status":"cancelled"' in frame
+
+
 async def test_events_sse(client, monkeypatch):
     await _config(client)
     _mock_model(monkeypatch, delay=0.3)

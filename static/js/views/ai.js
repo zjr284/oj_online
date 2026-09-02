@@ -32,8 +32,9 @@ Views.aiHome = async () => {
         <label>提供商 URL（OpenAI 兼容 chat/completions 接口）<input name="provider_url" required placeholder="https://api.example.com/v1/chat/completions" value="${escapeHtml(cfg.provider_url || "")}"></label>
         <label>模型名称<input name="model" required placeholder="gpt-4o-mini" value="${escapeHtml(cfg.model || "")}"></label>
         <label>模型密钥<input name="api_key" type="password" required placeholder="${cfg.api_key_configured ? "密钥不回显，保存时请重新填写" : "sk-..."}"></label>
-        <label>输入价格（元/计价单位）<input name="input_price" type="number" step="any" min="0" value="${cfg.input_price ?? 0}"></label>
-        <label>输出价格（元/计价单位）<input name="output_price" type="number" step="any" min="0" value="${cfg.output_price ?? 0}"></label>
+        <p class="muted">⚠ 提示：不同模型、不同时段的计费价格可能不同（部分厂商设有错峰优惠时段），请按实际调用时段的官方价格填写。</p>
+        <label>输入价格（元/计价单位，可选）<input name="input_price" type="number" step="any" min="0" value="${cfg.input_price ?? ""}" placeholder="留空则无法自动计算费用"></label>
+        <label>输出价格（元/计价单位，可选）<input name="output_price" type="number" step="any" min="0" value="${cfg.output_price ?? ""}" placeholder="留空则无法自动计算费用"></label>
         <label>计价单位（Token 数）<input name="price_unit" type="number" min="1" value="${cfg.price_unit ?? 1000000}"></label>
         <button type="submit" class="btn">保存配置</button>
       </form>
@@ -75,8 +76,9 @@ Views.aiHome = async () => {
         provider_url: f.provider_url.value.trim(),
         model: f.model.value.trim(),
         api_key: f.api_key.value,
-        input_price: parseFloat(f.input_price.value) || 0,
-        output_price: parseFloat(f.output_price.value) || 0,
+        // 留空 → null：费用优先按提供方返回的费用计算，否则无法计算
+        input_price: f.input_price.value === "" ? null : (parseFloat(f.input_price.value) || 0),
+        output_price: f.output_price.value === "" ? null : (parseFloat(f.output_price.value) || 0),
         price_unit: parseInt(f.price_unit.value) || 1000000,
       });
       toast("模型配置已保存");
@@ -101,9 +103,12 @@ Views.aiHome = async () => {
 // 生成的题目预览 + 用量费用面板（R1/R4）
 function renderResult(result, usage, problemId) {
   const u = usage || {};
-  const priceNote = u.price_unit
-    ? `费用 = 输入Token/${u.price_unit} × ${u.input_price} + 输出Token/${u.price_unit} × ${u.output_price}（${u.currency}）`
-    : "";
+  // 计价依据说明（advance.md 要求透明）
+  const priceNote = {
+    provider: "费用由模型接口直接返回。",
+    config: `费用 = 输入Token/${u.price_unit} × ${u.input_price} + 输出Token/${u.price_unit} × ${u.output_price}（${u.currency}，手动配置价格）`,
+    unknown: "未填写输入/输出价格，无法自动计算费用；可在模型配置中填写价格（注意不同时段价格可能不同）。",
+  }[u.price_source] || "";
   return `
     <div class="card">
       <h2>生成的题目：${escapeHtml(result.title)} <span class="muted">(${escapeHtml(result.id)})</span></h2>
@@ -130,7 +135,7 @@ function renderResult(result, usage, problemId) {
         <tr><td>输入 Token</td><td>${u.input_tokens ?? "—"}</td></tr>
         <tr><td>输出 Token</td><td>${u.output_tokens ?? "—"}</td></tr>
         <tr><td>总 Token</td><td>${u.total_tokens ?? "—"}</td></tr>
-        <tr><td>费用</td><td>${u.cost ?? "—"} ${escapeHtml(u.currency || "")}</td></tr>
+        <tr><td>费用</td><td>${u.cost == null ? "—" : `${u.cost} ${escapeHtml(u.currency || "")}`}</td></tr>
       </table>
       <p class="muted">计价依据：${escapeHtml(priceNote || "未配置价格")}${u.estimated ? "；模型接口未返回 Token 用量，按字符数/4 估算。" : ""}</p>
     </div>`;

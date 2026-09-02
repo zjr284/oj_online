@@ -122,8 +122,15 @@ models   →  数据结构（ORM / 文件）
   不写死厂商）；api_key 用 Fernet 加密存 `data/ai_config.json`（密钥文件 600 权限），
   任何接口/日志/错误信息都不泄露密钥；
 - **R3 进度与中断**：SSE 推送 progress/final 事件（含心跳），断线自动退回 1.5s 轮询；
-  cancel 用 `task.cancel()` 真正终止后台任务，取消后不会被旧任务覆盖状态；
+  模型调用期间每 2s 推送一次进度（progress 缓慢爬升 + "模型推理中（已 Xs）"），
+  执行期间界面持续展示可观察的进度信息，而非等任务完成才返回结果；
+  cancel 用 `task.cancel()` 真正终止后台任务，取消后不会被旧任务覆盖状态，
+  并立即向所有 SSE 观察者推送 `final(status=cancelled)` 终态，界面明确展示已中断；
 - **R4 用量计费**：`费用 = 输入Token/计价单位 × 输入单价 + 输出Token/计价单位 × 输出单价`；
+  单价来源按优先级自动确定：① 模型接口在 `usage.cost` 直接返回的费用
+  ② 模型配置中用户填写的输入/输出价格（前端提示：不同模型、不同时段的计费价格可能不同，
+  部分厂商设有错峰优惠时段，请按实际调用时段的官方价格填写）
+  ③ 未填价格且接口未返回费用时 `cost=null` 并在页面标注（`price_source: unknown`）；
   模型接口不返回用量时按字符数/4 估算，`usage.estimated=true` 并在页面标注；
 - **校验入库**：模型输出必须通过 `ProblemConfig` 校验（非法 JSON/缺字段 → 任务 failed，
   错误信息脱敏）；服务重启时遗留 pending/running 任务自动标记 failed。

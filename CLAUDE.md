@@ -32,7 +32,10 @@ routers（HTTP 语义）→ services（业务逻辑）→ models / ProblemStore�
 已实现：Step 1–6 + Advance AI 命题全部完成——题目管理（含 log_visibility）、评测引擎（沙箱/CE/TLE/MLE/RE/AC/WA）、
 评测管理（异步编排/重判代际/重启恢复/限流 429）、用户管理（bcrypt/操作日志/角色权限）、
 评测日志（明细可见性 + 访问审计）、前端页面（提交面板/评测列表详情轮询/用户管理）、
-AI 命题（model-config/problem-tasks/SSE 进度/取消/用量计费，api_key Fernet 加密永不返回）。
+AI 命题（model-config/problem-tasks/SSE 进度/取消/用量计费，api_key Fernet 加密永不返回；
+R3：模型调用期间 ticker 每 2s 推进度、cancel 推 final(cancelled) 即时通知观察者；
+费用 = 用户填写价格或接口返回 usage.cost，未填且接口未返回则 cost=null 标注；
+前端提示不同模型不同时段价格可能不同）。
 
 实现细节备忘：
 - 题目/语言不存在 → 404（api.md 语义）；语言注册权限为**任意登录用户**（Step 2/4 要求）。
