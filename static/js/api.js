@@ -48,6 +48,16 @@ function escapeHtml(s) {
   }[c]));
 }
 
+// 未登录（或会话过期）时的统一提示卡片
+function unauthHtml(msg = "该页面需要登录后查看") {
+  return `
+    <div class="card">
+      <h2>需要登录</h2>
+      <p class="muted">${msg}</p>
+      <p><a href="#/login" class="btn">去登录</a></p>
+    </div>`;
+}
+
 function toast(msg, ok = true) {
   const el = document.getElementById("toast");
   el.textContent = msg;

@@ -20,7 +20,9 @@
       "Bash(curl -s -X POST http://127.0.0.1:8321/api/users/ -H 'Content-Type: application/json' -d '{\"username\":\"smokeuser1\",\"password\":\"smokepw123\"}')",
       "Bash(curl -s -c /tmp/oj_cookie.txt -X POST http://127.0.0.1:8321/api/auth/login -H 'Content-Type: application/json' -d '{\"username\":\"smokeuser1\",\"password\":\"smokepw123\"}')",
       "Bash(curl -s -b /tmp/oj_cookie.txt -X POST http://127.0.0.1:8321/api/languages/ -H 'Content-Type: application/json' -d '{\"name\":\"python\",\"file_ext\":\"py\",\"run_cmd\":\"python3 {src}\"}')",
-      "Bash(curl -s -b /tmp/oj_cookie.txt -X POST http://127.0.0.1:8321/api/submissions/ -H 'Content-Type: application/json' -d '{\"problem_id\":\"sum_2\",\"language\":\"python\",\"code\":\"a, b = map\\(int, input\\(\\).split\\(\\)\\)\\\\nprint\\(a + b\\)\"}')"
+      "Bash(curl -s -b /tmp/oj_cookie.txt -X POST http://127.0.0.1:8321/api/submissions/ -H 'Content-Type: application/json' -d '{\"problem_id\":\"sum_2\",\"language\":\"python\",\"code\":\"a, b = map\\(int, input\\(\\).split\\(\\)\\)\\\\nprint\\(a + b\\)\"}')",
+      "Bash(curl -s -o /dev/null -w \"style.css: %{http_code}\\\\n\" http://127.0.0.1:8321/css/style.css)",
+      "Bash(curl -s http://127.0.0.1:8321/js/views/submissions.js)"
     ]
   }
 }

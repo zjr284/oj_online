@@ -21,6 +21,7 @@ Views.userHome = async () => {
         <div class="actions"><a href="#/submissions" class="btn">我的提交</a></div>
       </div>`;
   } catch (err) {
+    if (err.code === 401) { setCurrentUser(null); renderUserBox(); location.hash = "#/login"; return; }
     app.innerHTML = `<div class="card">加载失败：${escapeHtml(err.message)}</div>`;
   }
 };
@@ -38,6 +39,7 @@ Views.adminUsers = async () => {
   try {
     data = await api.get("/api/users/");
   } catch (err) {
+    if (err.code === 401) { setCurrentUser(null); renderUserBox(); location.hash = "#/login"; return; }
     app.innerHTML = `<div class="card">加载失败：${escapeHtml(err.message)}</div>`;
     return;
   }

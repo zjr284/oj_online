@@ -74,6 +74,7 @@ textarea.code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
 .btn.danger { background: #dc2626; }
 .btn.danger:hover { background: #b91c1c; }
 .btn.gray { background: #6b7280; }
+.btn.active, .btn.active:hover { background: #111827; }
 .link-btn { background: none; border: none; color: #d1d5db; cursor: pointer; font-size: 14px; }
 .link-btn:hover { color: #fff; }
 .actions { margin-top: 16px; display: flex; gap: 12px; }

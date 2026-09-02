@@ -22,9 +22,20 @@ Views.submissionList = async () => {
   try {
     data = await api.get(`/api/submissions/${qs ? "?" + qs : ""}`);
   } catch (err) {
-    app.innerHTML = `<div class="card">加载失败：${escapeHtml(err.message)}</div>`;
+    app.innerHTML = err.code === 401
+      ? unauthHtml()
+      : `<div class="card">加载失败：${escapeHtml(err.message)}</div>`;
     return;
   }
+
+  // 筛选链接：保留当前 problem_id 筛选条件
+  const filterHref = (status) => {
+    const qs = new URLSearchParams();
+    if (params.get("problem_id")) qs.set("problem_id", params.get("problem_id"));
+    if (status) qs.set("status", status);
+    const s = qs.toString();
+    return `#/submissions${s ? "?" + s : ""}`;
+  };
 
   const rows = data.submissions
     .map((s) => {
@@ -33,10 +44,10 @@ Views.submissionList = async () => {
         ? `<td>${escapeHtml(s.problem_id)}</td>
            ${isAdmin() ? `<td>${s.user_id}</td>` : ""}
            <td>${escapeHtml(s.language)}</td>
-           ${statusBadge(s.status)}
+           <td>${statusBadge(s.status)}</td>
            <td>${s.score ?? "—"}</td>
            <td>${escapeHtml(s.submit_time || "—")}</td>`
-        : `<td>—</td>${isAdmin() ? "<td>—</td>" : ""}<td>—</td>${statusBadge(s.status)}<td>—</td><td>—</td>`;
+        : `<td>—</td>${isAdmin() ? "<td>—</td>" : ""}<td>—</td><td>${statusBadge(s.status)}</td><td>—</td><td>—</td>`;
       return `<tr><td><a href="#/submissions/${s.submission_id}">#${s.submission_id}</a></td>${rest}</tr>`;
     })
     .join("");
@@ -45,10 +56,10 @@ Views.submissionList = async () => {
     <div class="card">
       <h2>评测记录 <span class="muted">共 ${data.total} 条</span></h2>
       <p>
-        <a href="#/submissions" class="btn gray ${!params.get("status") ? "active" : ""}">全部</a>
-        <a href="#/submissions?status=pending" class="btn gray">等待中</a>
-        <a href="#/submissions?status=success" class="btn gray">通过</a>
-        <a href="#/submissions?status=error" class="btn gray">未通过</a>
+        <a href="${filterHref()}" class="btn gray ${!params.get("status") ? "active" : ""}">全部</a>
+        <a href="${filterHref("pending")}" class="btn gray ${params.get("status") === "pending" ? "active" : ""}">等待中</a>
+        <a href="${filterHref("success")}" class="btn gray ${params.get("status") === "success" ? "active" : ""}">通过</a>
+        <a href="${filterHref("error")}" class="btn gray ${params.get("status") === "error" ? "active" : ""}">未通过</a>
       </p>
       <table class="table">
         <thead><tr>
@@ -67,7 +78,9 @@ async function loadSubmissionDetail(id) {
   try {
     s = await api.get(`/api/submissions/${encodeURIComponent(id)}`);
   } catch (err) {
-    app.innerHTML = `<div class="card">加载失败：${escapeHtml(err.message)}</div>`;
+    app.innerHTML = err.code === 401
+      ? unauthHtml()
+      : `<div class="card">加载失败：${escapeHtml(err.message)}</div>`;
     return;
   }
 

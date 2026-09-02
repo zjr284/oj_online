@@ -7,6 +7,10 @@ Views.problemList = async () => {
   try {
     problems = await api.get("/api/problems/");
   } catch (err) {
+    if (err.code === 401) {
+      document.getElementById("app").innerHTML = unauthHtml("请先登录后查看题目");
+      return;
+    }
     document.getElementById("plist").textContent = `加载失败：${err.message}`;
     return;
   }
@@ -33,7 +37,9 @@ Views.problemDetail = async (id) => {
   try {
     p = await api.get(`/api/problems/${encodeURIComponent(id)}`);
   } catch (err) {
-    app.innerHTML = `<div class="card">加载失败：${escapeHtml(err.message)}</div>`;
+    app.innerHTML = err.code === 401
+      ? unauthHtml("请先登录后查看题目")
+      : `<div class="card">加载失败：${escapeHtml(err.message)}</div>`;
     return;
   }
 
