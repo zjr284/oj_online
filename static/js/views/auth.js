@@ -4,6 +4,7 @@ function renderUserBox() {
   if (currentUser) {
     box.innerHTML = `
       <a href="#/user">${escapeHtml(currentUser.username)}</a>
+      <a href="#/ai">AI 命题</a>
       ${isAdmin() ? '<span class="badge">admin</span> <a href="#/admin/users">用户管理</a>' : ""}
       <button id="logout-btn" class="link-btn">退出</button>`;
     document.getElementById("logout-btn").onclick = async () => {

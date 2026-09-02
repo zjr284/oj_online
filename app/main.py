@@ -11,8 +11,8 @@ from fastapi.staticfiles import StaticFiles
 from app import config
 from app.core.errors import register_exception_handlers
 from app.database import init_db
-from app.routers import auth, languages, logs, maintenance, problems, submissions, users
-from app.services import judge_service
+from app.routers import ai, auth, languages, logs, maintenance, problems, submissions, users
+from app.services import ai_service, judge_service
 from app.services.language_service import ensure_languages
 from app.services.user_service import ensure_admin
 
@@ -26,6 +26,8 @@ async def lifespan(app: FastAPI):
     await ensure_languages()
     # 重启恢复：重新评测遗留的 pending 提交
     await judge_service.requeue_pending()
+    # AI 命题任务兜底：进程重启后遗留的 pending/running 标记为 failed
+    await ai_service.fail_stale_tasks()
     yield
 
 
@@ -42,9 +44,7 @@ app.include_router(languages.router)    # Step 2 语言注册表
 app.include_router(submissions.router)  # Step 3 评测管理（+ Step 5 提交日志）
 app.include_router(logs.router)         # Step 5 访问审计
 app.include_router(maintenance.router)  # 测试辅助 /api/reset/
-
-# TODO(Advance)：实现后取消注释
-# app.include_router(ai.router)
+app.include_router(ai.router)           # Advance：AI 智能命题
 
 # 前端静态页面（挂在最后，避免覆盖 /api 路由）
 app.mount("/", StaticFiles(directory=config.BASE_DIR / "static", html=True), name="static")

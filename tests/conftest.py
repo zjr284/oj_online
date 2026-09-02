@@ -29,6 +29,9 @@ async def client():
         await conn.run_sync(Base.metadata.create_all)
     shutil.rmtree(config.PROBLEMS_DIR, ignore_errors=True)
     config.PROBLEMS_DIR.mkdir(parents=True, exist_ok=True)
+    # AI 模块状态隔离：清空模型配置与密钥，避免用例间相互影响
+    (config.DATA_DIR / "ai_config.json").unlink(missing_ok=True)
+    (config.DATA_DIR / "ai_secret.key").unlink(missing_ok=True)
     await ensure_admin()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c

@@ -88,6 +88,18 @@ pre {
 pre.wrap { white-space: pre-wrap; word-break: break-word; }
 .sample pre { margin-top: 4px; }
 
+/* 进度条（AI 命题任务） */
+.progress-bar {
+  background: #e5e7eb; border-radius: 6px; height: 12px;
+  overflow: hidden; margin: 8px 0;
+}
+.progress-fill {
+  background: #2563eb; height: 100%; width: 0;
+  transition: width .3s ease;
+}
+.progress-fill.done { background: #16a34a; }
+.progress-fill.fail { background: #dc2626; }
+
 /* 提示条 */
 #toast {
   position: fixed; top: 68px; right: 24px; max-width: 360px;

@@ -1,0 +1,270 @@
+"""Advance：AI 智能命题接口测试（模型调用经 monkeypatch mock，不依赖外部服务）。"""
+import asyncio
+import json
+
+from conftest import login
+
+PROBLEM = {
+    "id": "sum_2",
+    "title": "两数之和",
+    "description": "输入两个整数，输出它们的和。",
+    "input_description": "一行两个整数。",
+    "output_description": "一个整数。",
+    "samples": [{"input": "1 2", "output": "3"}],
+    "constraints": "|a|, |b| ≤ 10^9",
+    "testcases": [
+        {"id": "1", "input": "1 2", "output": "3"},
+        {"id": "2", "input": "10 20", "output": "30"},
+    ],
+    "time_limit": 1,
+    "memory_limit": 64,
+}
+
+CONFIG = {
+    "provider_url": "https://api.example.com/v1/chat/completions",
+    "model": "test-model",
+    "api_key": "sk-secret-key-123456",
+    "input_price": 0.1,
+    "output_price": 0.2,
+    "price_unit": 1000000,
+}
+
+GENERATED = {
+    "id": "ai_gen_1",
+    "title": "AI 生成的题目",
+    "description": "题目描述",
+    "input_description": "输入格式",
+    "output_description": "输出格式",
+    "samples": [{"input": "1", "output": "2"}],
+    "constraints": "n ≤ 100",
+    "testcases": [
+        {"id": "1", "input": "1", "output": "2"},
+        {"id": "2", "input": "0", "output": "1"},
+    ],
+    "hint": "提示",
+    "source": "AI",
+    "tags": ["AI", "入门"],
+    "time_limit": 1.0,
+    "memory_limit": 64,
+    "author": "AI",
+    "difficulty": "简单",
+}
+
+FAKE_USAGE = {"prompt_tokens": 100, "completion_tokens": 200}
+
+
+def _mock_model(monkeypatch, content=None, usage=None, delay=0.0, exc=None):
+    """替换 ai_service._request_model（底层 HTTP 调用），保留真实的
+    响应解析、题目校验与费用计算管道。content 缺省返回合法题目 JSON。"""
+    import app.services.ai_service as svc
+
+    async def fake(cfg, payload):
+        if delay:
+            await asyncio.sleep(delay)
+        if exc is not None:
+            raise exc
+        return {
+            "choices": [{"message": {"content": content if content is not None else json.dumps(GENERATED, ensure_ascii=False)}}],
+            "usage": usage if usage is not None else FAKE_USAGE,
+        }
+
+    monkeypatch.setattr(svc, "_request_model", fake)
+
+
+async def _config(client):
+    await login(client, "admin", "admintestpassword")
+    resp = await client.put("/api/ai/model-config", json=CONFIG)
+    assert resp.status_code == 200
+    return resp
+
+
+async def _wait_task(client, tid, timeout=15):
+    for _ in range(int(timeout * 10)):
+        resp = await client.get(f"/api/ai/problem-tasks/{tid}")
+        assert resp.status_code == 200
+        d = resp.json()["data"]
+        if d["status"] in ("done", "cancelled", "failed"):
+            return d
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"task {tid} not finished in {timeout}s")
+
+
+async def test_model_config_security(client):
+    # 未登录 → 401
+    resp = await client.put("/api/ai/model-config", json=CONFIG)
+    assert resp.status_code == 401
+
+    resp = await _config(client)
+    data = resp.json()["data"]
+    assert data["provider_url"] == CONFIG["provider_url"]
+    assert data["model"] == CONFIG["model"]
+    assert data["api_key_configured"] is True
+    assert "api_key" not in data   # 密钥绝不返回（api.md 安全要求）
+
+    # GET 查询同样不含密钥
+    resp = await client.get("/api/ai/model-config")
+    data = resp.json()["data"]
+    assert data["api_key_configured"] is True and "api_key" not in data
+    assert data["price_unit"] == 1000000
+
+    # 磁盘上的配置文件不存明文密钥
+    from app import config
+    text = (config.DATA_DIR / "ai_config.json").read_text(encoding="utf-8")
+    assert "sk-secret-key-123456" not in text
+
+    # 非法 provider_url / 负价格 → 400
+    bad = dict(CONFIG, provider_url="ftp://x")
+    assert (await client.put("/api/ai/model-config", json=bad)).status_code == 400
+    bad = dict(CONFIG, input_price=-1)
+    assert (await client.put("/api/ai/model-config", json=bad)).status_code == 400
+
+
+async def test_no_config_and_missing_problem(client):
+    await login(client, "admin", "admintestpassword")
+    # 未配置模型 → 400
+    resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "出一题"})
+    assert resp.status_code == 400
+    await _config(client)
+    # 参考题目不存在 → 404（api.md）
+    resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "出一题", "problem_id": "nope"})
+    assert resp.status_code == 404
+    # requirement 缺失 → 400
+    resp = await client.post("/api/ai/problem-tasks/", json={})
+    assert resp.status_code == 400
+
+
+async def test_task_flow_cost_and_import(client, monkeypatch):
+    await _config(client)
+    await client.post("/api/problems/", json=PROBLEM)
+    _mock_model(monkeypatch)
+
+    resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "出一道入门题"})
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["status"] == "pending"
+    tid = body["task_id"]
+
+    d = await _wait_task(client, tid)
+    assert d["status"] == "done"
+    assert d["result"]["id"] == "ai_gen_1"
+    # 费用公式：输入Token/单位×输入单价 + 输出Token/单位×输出单价
+    u = d["usage"]
+    assert u["input_tokens"] == 100 and u["output_tokens"] == 200 and u["total_tokens"] == 300
+    assert u["cost"] == 0.00005   # 100/1e6*0.1 + 200/1e6*0.2
+    assert u["currency"] == "CNY" and u["estimated"] is False
+
+    # 生成结果不直接写题库（与基础功能解耦，经已有接口导入）
+    resp = await client.get("/api/problems/ai_gen_1")
+    assert resp.status_code == 404
+    # 用户可经既有 POST /api/problems/ 导入生成结果（R1 衔接）
+    resp = await client.post("/api/problems/", json=d["result"])
+    assert resp.status_code == 200
+    resp = await client.get("/api/problems/ai_gen_1")
+    assert resp.status_code == 200
+
+
+async def test_task_list_and_permissions(client, monkeypatch):
+    await _config(client)
+    await client.post("/api/users/", json={"username": "bob", "password": "pw123456"})
+    await client.post("/api/users/", json={"username": "carol", "password": "pw123456"})
+    _mock_model(monkeypatch)
+
+    # bob 创建任务
+    await login(client, "bob", "pw123456")
+    resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "出一道题"})
+    tid = resp.json()["data"]["task_id"]
+    await _wait_task(client, tid)
+
+    # bob 可见自己的任务；列表不含 result
+    resp = await client.get("/api/ai/problem-tasks/")
+    assert [t["task_id"] for t in resp.json()["data"]] == [tid]
+    assert "result" not in resp.json()["data"][0]
+
+    # carol 无权查看/取消（403）
+    await login(client, "carol", "pw123456")
+    assert (await client.get(f"/api/ai/problem-tasks/{tid}")).status_code == 403
+    assert (await client.put(f"/api/ai/problem-tasks/{tid}/cancel")).status_code == 403
+    assert (await client.get("/api/ai/problem-tasks/")).json()["data"] == []
+
+    # 管理员可见全部
+    await login(client, "admin", "admintestpassword")
+    assert (await client.get(f"/api/ai/problem-tasks/{tid}")).status_code == 200
+    resp = await client.get("/api/ai/problem-tasks/")
+    assert len(resp.json()["data"]) == 1
+    # 不存在的任务 → 404
+    assert (await client.get("/api/ai/problem-tasks/99999")).status_code == 404
+
+
+async def test_cancel_really_terminates(client, monkeypatch):
+    await _config(client)
+    _mock_model(monkeypatch, delay=10)
+
+    resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "出一道题"})
+    tid = resp.json()["data"]["task_id"]
+    # 等任务进入 running（模型调用被 sleep 阻塞）
+    for _ in range(100):
+        d = (await client.get(f"/api/ai/problem-tasks/{tid}")).json()["data"]
+        if d["status"] == "running":
+            break
+        await asyncio.sleep(0.05)
+
+    resp = await client.put(f"/api/ai/problem-tasks/{tid}/cancel")
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "cancelled"
+    # 已结束再取消 → 409（api.md）
+    resp = await client.put(f"/api/ai/problem-tasks/{tid}/cancel")
+    assert resp.status_code == 409
+
+    # 真正终止：等待后仍为 cancelled，而不是被后台任务改成 done
+    await asyncio.sleep(0.5)
+    d = (await client.get(f"/api/ai/problem-tasks/{tid}")).json()["data"]
+    assert d["status"] == "cancelled"
+
+
+async def test_invalid_model_output_and_secret_leak(client, monkeypatch):
+    await _config(client)
+
+    async def run(content=None, exc=None):
+        _mock_model(monkeypatch, content=content, exc=exc)
+        resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "出一道题"})
+        tid = resp.json()["data"]["task_id"]
+        return await _wait_task(client, tid)
+
+    # 输出不是 JSON → failed
+    d = await run(content="这不是 JSON")
+    assert d["status"] == "failed"
+    assert "not valid JSON" in d["result"]["error"]
+
+    # 输出是 JSON 但缺必填字段 → failed（校验模型返回数据）
+    d = await run(content='{"id": "x", "title": "t"}')
+    assert d["status"] == "failed"
+    assert "validation" in d["result"]["error"]
+
+    # 异常信息含 api_key → 脱敏（api.md：不得在错误信息中泄露密钥）
+    d = await run(exc=RuntimeError(f"connect fail with key sk-secret-key-123456"))
+    assert d["status"] == "failed"
+    assert "sk-secret-key-123456" not in d["result"]["error"]
+    assert "***" in d["result"]["error"]
+
+
+async def test_events_sse(client, monkeypatch):
+    await _config(client)
+    _mock_model(monkeypatch, delay=0.3)
+
+    resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "出一道题"})
+    tid = resp.json()["data"]["task_id"]
+
+    async with client.stream("GET", f"/api/ai/problem-tasks/{tid}/events") as r:
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        text = (await r.aread()).decode()
+
+    assert "event: state" in text
+    assert "event: progress" in text
+    assert "event: final" in text
+    assert '"status": "done"' in text or '"status":"done"' in text
+    # 权限：carol 访问 events → 403
+    await client.post("/api/users/", json={"username": "carol", "password": "pw123456"})
+    await login(client, "carol", "pw123456")
+    resp = await client.get(f"/api/ai/problem-tasks/{tid}/events")
+    assert resp.status_code == 403

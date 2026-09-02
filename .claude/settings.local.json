@@ -22,7 +22,19 @@
       "Bash(curl -s -b /tmp/oj_cookie.txt -X POST http://127.0.0.1:8321/api/languages/ -H 'Content-Type: application/json' -d '{\"name\":\"python\",\"file_ext\":\"py\",\"run_cmd\":\"python3 {src}\"}')",
       "Bash(curl -s -b /tmp/oj_cookie.txt -X POST http://127.0.0.1:8321/api/submissions/ -H 'Content-Type: application/json' -d '{\"problem_id\":\"sum_2\",\"language\":\"python\",\"code\":\"a, b = map\\(int, input\\(\\).split\\(\\)\\)\\\\nprint\\(a + b\\)\"}')",
       "Bash(curl -s -o /dev/null -w \"style.css: %{http_code}\\\\n\" http://127.0.0.1:8321/css/style.css)",
-      "Bash(curl -s http://127.0.0.1:8321/js/views/submissions.js)"
+      "Bash(curl -s http://127.0.0.1:8321/js/views/submissions.js)",
+      "Bash(tail -5 /tmp/oj_ai.log; echo ---; ss -tlnp 2>/dev/null | grep -E \"8321|8355\" || echo \"no listener\")",
+      "Read(//tmp/**)",
+      "Bash(kill 31226)",
+      "Bash(curl -s -o /dev/null -w \"oj: %{http_code}\\\\n\" http://127.0.0.1:8321/)",
+      "Bash(curl -s -c /tmp/oj_ai_ck.txt -X POST http://127.0.0.1:8321/api/auth/login -H 'Content-Type: application/json' -d '{\"username\":\"admin\",\"password\":\"admintestpassword\"}')",
+      "Bash(curl -s -b /tmp/oj_ai_ck.txt -X PUT http://127.0.0.1:8321/api/ai/model-config -H 'Content-Type: application/json' -d '{\"provider_url\":\"http://127.0.0.1:8355/v1/chat/completions\",\"model\":\"mock-model\",\"api_key\":\"sk-mock-999\",\"input_price\":0.5,\"output_price\":1.5,\"price_unit\":1000000}')",
+      "Bash(curl -s -b /tmp/oj_ai_ck.txt http://127.0.0.1:8321/api/ai/model-config)",
+      "Bash(curl -s -b /tmp/oj_ai_ck.txt -X POST http://127.0.0.1:8321/api/ai/problem-tasks/ -H 'Content-Type: application/json' -d '{\"requirement\":\"出一道 A+B 入门题，包含大数边界\"}')",
+      "Bash(curl -s -b /tmp/oj_ai_ck.txt http://127.0.0.1:8321/api/ai/problem-tasks/1)",
+      "Bash(pkill -f \"uvicorn app.main:app --port 8321\")",
+      "Bash(pkill -f mock_model.py)",
+      "Bash(kill 42768)"
     ]
   }
 }

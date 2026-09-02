@@ -16,6 +16,10 @@ venv/
 data/*.db
 data/problems/*.json.bak
 
+# AI 模块运行时文件（含加密密钥与 Fernet 密钥，绝不可入库）
+data/ai_config.json
+data/ai_secret.key
+
 # 日志与临时文件
 *.log
 .DS_Store

@@ -29,10 +29,10 @@ routers（HTTP 语义）→ services（业务逻辑）→ models / ProblemStore�
 
 ## 状态
 
-已实现：Step 1–6 全部完成——题目管理（含 log_visibility）、评测引擎（沙箱/CE/TLE/MLE/RE/AC/WA）、
+已实现：Step 1–6 + Advance AI 命题全部完成——题目管理（含 log_visibility）、评测引擎（沙箱/CE/TLE/MLE/RE/AC/WA）、
 评测管理（异步编排/重判代际/重启恢复/限流 429）、用户管理（bcrypt/操作日志/角色权限）、
-评测日志（明细可见性 + 访问审计）、前端页面（提交面板/评测列表详情轮询/用户管理）。
-待实现（骨架文件含 api.md 规格注释）：Advance `app/routers/ai.py`。
+评测日志（明细可见性 + 访问审计）、前端页面（提交面板/评测列表详情轮询/用户管理）、
+AI 命题（model-config/problem-tasks/SSE 进度/取消/用量计费，api_key Fernet 加密永不返回）。
 
 实现细节备忘：
 - 题目/语言不存在 → 404（api.md 语义）；语言注册权限为**任意登录用户**（Step 2/4 要求）。

@@ -1,9 +1,9 @@
 # Online Judge（实验二：在线评测系统）
 
-基于 FastAPI 异步接口的在线评测系统。**Step 1–6 已全部实现**：
+基于 FastAPI 异步接口的在线评测系统。**Step 1–6 与 Advance AI 智能命题已全部实现**：
 题目管理、评测引擎（沙箱判题）、评测管理（提交/重判/限流）、
-用户与权限管理、评测日志（明细可见性 + 访问审计）与配套前端页面。
-Advance AI 命题模块留有清晰扩展点。
+用户与权限管理、评测日志（明细可见性 + 访问审计）、
+AI 命题（可配置模型/实时进度/中断/用量计费）与配套前端页面。
 
 ## 快速开始
 
@@ -51,7 +51,8 @@ app/
 │   ├── problem_store.py #   题目 JSON 文件存储（Step 1）
 │   ├── user_service.py  #   用户注册/校验/统计/初始管理员
 │   ├── language_service.py # 默认语言种子（Step 2）
-│   └── judge_service.py #   异步评测编排/重判代际/重启恢复（Step 3）
+│   ├── judge_service.py #   异步评测编排/重判代际/重启恢复（Step 3）
+│   └── ai_service.py    #   AI 命题：加密配置/任务编排/模型调用/用量计费（Advance）
 ├── routers/             # 路由层（按业务域划分）
 │   ├── problems.py      #   Step 1 题目 CRUD + Step 5 log_visibility ✅
 │   ├── auth.py          #   Step 4 登录/登出 ✅
@@ -60,13 +61,13 @@ app/
 │   ├── submissions.py   #   Step 3 提交/列表/详情/rejudge/限流 + Step 5 log ✅
 │   ├── logs.py          #   Step 5 访问审计 ✅
 │   ├── maintenance.py   #   测试辅助 /api/reset/ ✅
-│   └── ai.py            #   Advance AI 命题（骨架，待实现）
+│   └── ai.py            #   Advance AI 命题：配置/任务/SSE 进度/取消 ✅
 └── judge/
     └── runner.py        # 判题引擎：沙箱执行/资源限制/输出比对（Step 2） ✅
 
 data/problems/           # 题目配置文件（sum_2 / P1001 示例）
-static/                  # 前端（题目/提交面板/评测列表详情/用户管理，hash 路由）
-tests/                   # pytest 接口测试（12 个，含真实判题端到端）
+static/                  # 前端（题目/评测/AI 命题/用户管理，hash 路由）
+tests/                   # pytest 接口测试（19 个，含真实判题端到端与 AI 全流程）
 ```
 
 ## 分层约定（扩展方式）
@@ -99,7 +100,30 @@ models   →  数据结构（ORM / 文件）
 - Git 提交遵循 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/v1.0.0/)，
   大文件不入库（数据库文件已 gitignore）。
 
-## 待扩展（Advance）
+## Advance：AI 智能命题
 
-AI 命题模块：实现 `app/routers/ai.py`（骨架与 api.md 规格注释已就绪），
-`AiTask` 模型已建表，密钥安全要求见该文件头部注释；挂载取消 `main.py` 中的注释即可。
+接口（api.md 建议路径 + 等价扩展，已在文档说明）：
+
+| 接口 | 说明 |
+|---|---|
+| `PUT /api/ai/model-config` | 配置 provider_url/model/api_key/价格（登录用户）；**api_key 加密存储且永不返回** |
+| `GET /api/ai/model-config` | 查询配置公开字段（等价扩展；仍不返回 api_key） |
+| `POST /api/ai/problem-tasks/` | 创建命题任务（可指定参考题目）；未配置模型 400、题目不存在 404 |
+| `GET /api/ai/problem-tasks/` | 任务列表（等价扩展：本人任务，管理员全部；不含 result） |
+| `GET /api/ai/problem-tasks/{id}` | 任务状态：status/progress/result/usage（创建者或管理员） |
+| `GET /api/ai/problem-tasks/{id}/events` | SSE 实时进度（同时支持轮询状态接口） |
+| `PUT /api/ai/problem-tasks/{id}/cancel` | 真正终止后台任务；已结束 409 |
+
+设计要点：
+
+- **R1 交互衔接**：前端 AI 命题页提交需求 → 实时进度 → 预览生成的题目 →
+  经已有的 `POST/PUT /api/problems/` 接口导入题库，AI 模块本身不直接写题库，与基础功能解耦；
+- **R2 可配置**：provider_url/model/api_key 均通过接口配置（OpenAI 兼容 chat/completions 协议，
+  不写死厂商）；api_key 用 Fernet 加密存 `data/ai_config.json`（密钥文件 600 权限），
+  任何接口/日志/错误信息都不泄露密钥；
+- **R3 进度与中断**：SSE 推送 progress/final 事件（含心跳），断线自动退回 1.5s 轮询；
+  cancel 用 `task.cancel()` 真正终止后台任务，取消后不会被旧任务覆盖状态；
+- **R4 用量计费**：`费用 = 输入Token/计价单位 × 输入单价 + 输出Token/计价单位 × 输出单价`；
+  模型接口不返回用量时按字符数/4 估算，`usage.estimated=true` 并在页面标注；
+- **校验入库**：模型输出必须通过 `ProblemConfig` 校验（非法 JSON/缺字段 → 任务 failed，
+  错误信息脱敏）；服务重启时遗留 pending/running 任务自动标记 failed。

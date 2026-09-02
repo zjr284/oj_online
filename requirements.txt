@@ -6,6 +6,7 @@ aiosqlite>=0.20
 pydantic>=2.6
 psutil>=5.9
 bcrypt>=4.1
+cryptography>=42.0
 
 # 测试依赖
 pytest>=8.0

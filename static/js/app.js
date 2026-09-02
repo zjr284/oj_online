@@ -7,6 +7,8 @@ const routes = [
   { pattern: /^#\/problems\/?$/, view: "problemList" },
   { pattern: /^#\/submissions\/([^/]+)\/?$/, view: "submissionDetail" },
   { pattern: /^#\/submissions\/?$/, view: "submissionList" },
+  { pattern: /^#\/ai\/tasks\/([^/]+)\/?$/, view: "aiTaskDetail" },
+  { pattern: /^#\/ai\/?$/, view: "aiHome" },
   { pattern: /^#\/admin\/users\/?$/, view: "adminUsers" },
   { pattern: /^#\/login\/?$/, view: "login" },
   { pattern: /^#\/register\/?$/, view: "register" },
