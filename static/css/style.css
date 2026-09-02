@@ -1,111 +1,361 @@
-/* OJ 前端样式（极简风格，后续可自行美化） */
+/* OJ 前端设计系统（参考洛谷 / LeetCode：卡片式布局、LeetCode 状态色板、深色代码区）
+   本文件的类名是视图层 JS 的契约，修改前请全局搜索使用点。 */
+
+:root {
+  --bg: #f3f4f6;
+  --card: #ffffff;
+  --border: #e5e7eb;
+  --border-soft: #f0f1f3;
+  --text: #1f2937;
+  --muted: #6b7280;
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --primary-soft: #eff6ff;
+  --success: #16a34a;
+  --danger: #dc2626;
+  --warning: #d97706;
+  --violet: #7c3aed;
+  --radius: 10px;
+  --shadow-sm: 0 1px 2px rgba(17, 24, 39, .05);
+  --shadow: 0 6px 24px rgba(17, 24, 39, .10);
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, "Source Code Pro", monospace;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
-  background: #f5f6f8;
-  color: #24292f;
-  line-height: 1.6;
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", "Noto Sans SC", sans-serif;
+  /* 渐变光晕 + 细网点背景：打破纯灰底的单调感，白色卡片浮于其上更有层次 */
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(rgba(15, 23, 42, .055) 1px, transparent 1px),
+    radial-gradient(680px 380px at 8% -6%, rgba(59, 130, 246, .13), transparent 62%),
+    radial-gradient(620px 360px at 92% 4%, rgba(139, 92, 246, .11), transparent 60%),
+    radial-gradient(900px 480px at 50% 108%, rgba(37, 99, 235, .08), transparent 58%);
+  background-size: 24px 24px, auto, auto, auto;
+  background-attachment: fixed;
+  min-height: 100vh;
+  color: var(--text);
+  line-height: 1.65;
+  font-size: 14px;
 }
 
-/* 顶栏 */
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-  padding: 0 24px;
-  height: 52px;
-  background: #1f2937;
-  color: #fff;
+/* ---------- 顶栏导航（LeetCode 风格：白底毛玻璃 + 圆角高亮） ---------- */
+.navbar {
+  position: sticky; top: 0; z-index: 50;
+  background: rgba(255, 255, 255, .92);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
 }
-.topbar .brand a { color: #fff; font-weight: 700; font-size: 18px; text-decoration: none; }
-.topbar nav { display: flex; gap: 16px; flex: 1; }
-.topbar nav a { color: #d1d5db; text-decoration: none; }
-.topbar nav a:hover { color: #fff; }
-.user-box { display: flex; align-items: center; gap: 10px; font-size: 14px; }
-.user-box a { color: #d1d5db; text-decoration: none; }
-.user-box a:hover { color: #fff; }
+.navbar-inner {
+  max-width: 1100px; margin: 0 auto; padding: 0 20px; height: 56px;
+  display: flex; align-items: center; gap: 26px;
+}
+.brand { display: flex; align-items: center; gap: 10px; color: var(--text); font-weight: 700; font-size: 16px; text-decoration: none; }
+.brand:hover { text-decoration: none; }
+.brand-logo {
+  width: 30px; height: 30px; border-radius: 8px;
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+  color: #fff; display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 15px;
+}
+.nav-links { display: flex; gap: 4px; flex: 1; }
+.nav-links a {
+  padding: 6px 13px; border-radius: 8px; color: var(--muted);
+  font-size: 14px; font-weight: 500; text-decoration: none; transition: .15s;
+}
+.nav-links a:hover { color: var(--text); background: var(--bg); text-decoration: none; }
+.nav-links a.active { color: var(--primary); background: var(--primary-soft); }
 
-/* 布局 */
-.container { max-width: 960px; margin: 24px auto; padding: 0 16px; }
+/* 用户区：头像 + 用户名 + 管理员徽章 */
+.user-box { display: flex; align-items: center; gap: 12px; }
+.user-chip { display: flex; align-items: center; gap: 8px; color: var(--text); text-decoration: none; font-size: 14px; font-weight: 500; }
+.user-chip:hover { text-decoration: none; }
+.user-name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.avatar {
+  width: 30px; height: 30px; border-radius: 50%; flex: none;
+  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  color: #fff; display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700;
+}
+.avatar.lg { width: 72px; height: 72px; font-size: 30px; }
+.link-btn { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; padding: 4px; }
+.link-btn:hover { color: var(--danger); }
+
+/* ---------- 布局 ---------- */
+.container { max-width: 1100px; margin: 26px auto; padding: 0 20px; }
+.footer { text-align: center; color: #9ca3af; font-size: 12px; padding: 28px 0 40px; }
+.footer a { color: #9ca3af; }
+
 .card {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 20px 24px;
-  margin-bottom: 16px;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 22px 26px; margin-bottom: 18px;
+  box-shadow: 0 1px 3px rgba(17, 24, 39, .06), 0 4px 16px rgba(17, 24, 39, .045);
 }
-.card h2 { font-size: 20px; margin-bottom: 12px; }
-.card h3 { font-size: 15px; margin: 16px 0 6px; }
-.muted { color: #6b7280; font-size: 13px; }
+.card h1 { font-size: 24px; font-weight: 800; margin-bottom: 10px; }
+.card h2 { font-size: 18px; margin-bottom: 12px; font-weight: 700; }
+.card h3 { font-size: 15px; margin: 18px 0 8px; font-weight: 600; }
+.muted { color: var(--muted); font-size: 13px; }
+.mono { font-family: var(--mono); }
+.tags-row { margin-top: 8px; }
+.meta-line { margin-top: 6px; }
+
+/* ---------- 题目描述正文（洛谷竖式排布：较大字号与行距，长文本更易读） ---------- */
+.problem-desc h1 { font-size: 28px; }
+.problem-desc h3 { font-size: 18px; margin: 22px 0 10px; }
+.problem-desc pre { font-size: 16px; line-height: 1.8; padding: 16px 18px; }
+.problem-desc .meta-line { font-size: 15px; }
+.problem-desc .chip { font-size: 14px; padding: 2px 10px; }
+.problem-desc .diff-chip { font-size: 14px; padding: 3px 14px; }
+.problem-desc .sample-head { font-size: 14px; }
+.problem-desc .tags-row { margin-top: 10px; }
+
+/* ---------- Markdown 正文渲染（题目描述等，解析见 js/markdown.js） ---------- */
+.markdown { font-size: 16px; line-height: 1.8; }
+.markdown p { margin: 0 0 10px; }
+.markdown h3 { margin: 20px 0 10px; }
+.markdown h4 { font-size: 16px; margin: 16px 0 8px; }
+.markdown h5, .markdown h6 { font-size: 15px; margin: 14px 0 6px; }
+.markdown ul, .markdown ol { margin: 0 0 10px; padding-left: 26px; }
+.markdown li { margin: 3px 0; }
+.markdown blockquote {
+  margin: 0 0 10px; padding: 8px 14px; border-left: 3px solid var(--primary);
+  background: var(--primary-soft); border-radius: 0 6px 6px 0;
+}
+.markdown a { color: var(--primary); text-decoration: none; }
+.markdown a:hover { text-decoration: underline; }
+.markdown img { max-width: 100%; border-radius: 6px; }
+.markdown hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+.markdown code { font-family: var(--mono); font-size: .88em; background: #eef1f4; padding: 1px 6px; border-radius: 5px; }
+.markdown table { border-collapse: collapse; margin: 0 0 12px; width: 100%; }
+.markdown th, .markdown td { border: 1px solid var(--border); padding: 7px 12px; font-size: 14px; text-align: left; }
+.markdown th { background: #f9fafb; font-weight: 600; }
+
+/* 围栏代码块保持等宽深色（不被 .problem-desc 的字号行距覆盖） */
+.problem-desc pre.md-code, .markdown pre.md-code { font-family: var(--mono); font-size: 13.5px; line-height: 1.6; margin: 0 0 12px; padding: 14px 16px; }
+
+/* 个人主页资料卡（头像 + 用户名） */
+.profile-card { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.profile-card h2 { margin: 0 0 4px; }
+
+/* 表单底部切换链接（登录 ⇄ 注册） */
+.swap { text-align: center; margin-top: 14px; font-size: 13px; }
+
+/* 页面标题带 + 操作按钮 */
+.page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.page-head h1 { font-size: 24px; font-weight: 800; }
+.page-head .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+.page-head .actions { display: flex; gap: 10px; }
+
+/* 工具栏（列表页：搜索/筛选） */
+.toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 14px 0 16px; }
+input.search { width: 280px; }
+
+/* 表单双列（短字段） */
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }
+
+/* ---------- 徽章 / 标签 / 难度 ---------- */
 .badge {
-  background: #f59e0b; color: #fff; border-radius: 4px;
-  padding: 1px 6px; font-size: 12px;
+  display: inline-flex; align-items: center; padding: 2px 10px;
+  border-radius: 999px; font-size: 12px; font-weight: 600; line-height: 1.6;
+  background: #eef1f4; color: #374151;
 }
-.badge.ok { background: #16a34a; }
-.badge.fail { background: #dc2626; }
-.badge.pending { background: #6b7280; }
+.badge.ok { background: #e7f6ec; color: var(--success); }
+.badge.fail { background: #fdeaea; color: var(--danger); }
+.badge.pending { background: #eef1f4; color: var(--muted); }
+.badge.warn { background: #fef3e2; color: var(--warning); }
+.badge.info { background: var(--primary-soft); color: var(--primary); }
+.badge.admin { background: var(--primary-soft); color: var(--primary); }
+.badge.role-user { background: #eef1f4; color: var(--muted); }
+.badge.role-banned { background: #fdeaea; color: var(--danger); }
 .badge + .badge { margin-left: 4px; }
 
-/* 表格 */
-.table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-.table th, .table td { border: 1px solid #e5e7eb; padding: 8px 12px; text-align: left; }
-.table th { background: #f9fafb; font-weight: 600; }
-.table a { color: #2563eb; text-decoration: none; }
-.table a:hover { text-decoration: underline; }
-
-/* 表单 */
-label { display: block; margin-bottom: 12px; font-size: 14px; }
-input, textarea, select {
-  width: 100%; padding: 8px 10px; margin-top: 4px;
-  border: 1px solid #d1d5db; border-radius: 6px;
-  font-size: 14px; font-family: inherit;
+/* 标签芯片（题目标签） */
+.chip {
+  display: inline-flex; padding: 1px 9px; border-radius: 6px;
+  background: var(--bg); color: var(--muted); font-size: 12px; margin: 0 4px 4px 0;
 }
-textarea { min-height: 80px; resize: vertical; }
-textarea.code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; min-height: 180px; }
 
-/* 按钮 */
+/* 难度徽章（LeetCode 配色：简单青绿 / 中等金黄 / 困难红） */
+.diff-chip { display: inline-flex; align-items: center; padding: 2px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.diff-easy { background: #e6f6f2; color: #00a18f; }
+.diff-medium { background: #fff6e0; color: #b8860b; }
+.diff-hard { background: #ffe9ec; color: #f23c5d; }
+
+/* ---------- 按钮 / 分段筛选 ---------- */
 .btn {
-  display: inline-block; padding: 8px 16px; border-radius: 6px;
-  background: #2563eb; color: #fff; text-decoration: none;
-  border: none; font-size: 14px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 18px; border-radius: 8px; border: none; cursor: pointer;
+  background: var(--primary); color: #fff; font-size: 14px; font-weight: 500;
+  text-decoration: none; transition: .15s;
 }
-.btn:hover { background: #1d4ed8; }
-.btn.danger { background: #dc2626; }
+.btn:hover { background: var(--primary-hover); text-decoration: none; }
+.btn.gray { background: #fff; color: var(--text); border: 1px solid var(--border); }
+.btn.gray:hover { background: #f9fafb; }
+.btn.danger { background: var(--danger); }
 .btn.danger:hover { background: #b91c1c; }
-.btn.gray { background: #6b7280; }
-.btn.active, .btn.active:hover { background: #111827; }
-.link-btn { background: none; border: none; color: #d1d5db; cursor: pointer; font-size: 14px; }
-.link-btn:hover { color: #fff; }
-.actions { margin-top: 16px; display: flex; gap: 12px; }
+.btn.sm { padding: 4px 12px; font-size: 13px; }
+.btn.block { width: 100%; }
 
-/* 代码块 */
+/* 分段筛选（LeetCode 风格 tab） */
+.segmented {
+  display: inline-flex; background: #fff; border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden;
+}
+.segmented a {
+  padding: 6px 16px; font-size: 13px; font-weight: 500; color: var(--muted);
+  text-decoration: none; border-right: 1px solid var(--border-soft);
+}
+.segmented a:last-child { border-right: none; }
+.segmented a:hover { background: #f9fafb; text-decoration: none; }
+.segmented a.active { background: var(--primary); color: #fff; }
+
+/* ---------- 表单 ---------- */
+label { display: block; margin-bottom: 14px; font-size: 13px; font-weight: 600; color: #374151; }
+label .hint { display: block; font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 2px; }
+input, textarea, select {
+  width: 100%; padding: 9px 12px; margin-top: 5px;
+  border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px;
+  font-family: inherit; background: #fff; color: var(--text); transition: .15s;
+}
+input:focus, textarea:focus, select:focus {
+  outline: none; border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, .12);
+}
+textarea { min-height: 96px; resize: vertical; }
+
+/* 代码编辑器（LeetCode 深色风格，编辑器/JSON 编辑用） */
+textarea.code {
+  min-height: 220px; background: #0f172a; color: #e2e8f0; border-color: #1e293b;
+  font-family: var(--mono); font-size: 13px; line-height: 1.6; caret-color: #93c5fd;
+}
+textarea.code:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, .2); }
+textarea.code::placeholder { color: #64748b; }
+
+/* 登录/注册分栏卡片 */
+.form-card { max-width: 520px; margin: 40px auto; }
+.form-card h2 { font-size: 22px; text-align: center; margin-bottom: 20px; }
+.form-card .swap { text-align: center; margin-top: 14px; }
+
+/* ---------- 表格 ---------- */
+.table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+.table th {
+  text-align: left; font-size: 12px; font-weight: 600; color: var(--muted);
+  padding: 9px 14px; background: #f9fafb;
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+}
+.table td { padding: 10px 14px; border-bottom: 1px solid var(--border-soft); font-size: 14px; vertical-align: middle; }
+.table tbody tr:hover { background: #fafbfc; }
+.table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pid { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.ptitle { color: var(--text); font-weight: 600; }
+.ptitle:hover { color: var(--primary); text-decoration: none; }
+
+/* 内联窄下拉（用户管理角色选择） */
+td select.role-select { width: auto; padding: 4px 8px; font-size: 13px; margin-top: 0; border-radius: 6px; }
+
+/* ---------- 代码块 / 样例 ---------- */
 pre {
-  background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px;
-  padding: 12px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-  font-size: 13px; overflow-x: auto;
+  background: #f6f8fa; border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px; font-family: var(--mono); font-size: 13px; line-height: 1.6;
+  overflow-x: auto; white-space: pre-wrap; word-break: break-word;
 }
-pre.wrap { white-space: pre-wrap; word-break: break-word; }
-.sample pre { margin-top: 4px; }
+/* 深色代码块（提交代码 / 编译与错误输出，LeetCode 风格） */
+pre.code-dark { background: #0f172a; color: #e2e8f0; border: none; }
 
-/* 进度条（AI 命题任务） */
-.progress-bar {
-  background: #e5e7eb; border-radius: 6px; height: 12px;
-  overflow: hidden; margin: 8px 0;
+/* 样例双栏（洛谷风格输入/输出对照框） */
+.sample-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 10px 0 4px; }
+.sample-box { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.sample-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  background: #f9fafb; padding: 6px 12px; border-bottom: 1px solid var(--border);
 }
+.sample-box pre { border: none; border-radius: 0; background: #fff; margin: 0; }
+.copy-btn {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--muted); font-size: 12px; padding: 1px 8px; cursor: pointer; transition: .15s;
+}
+.copy-btn:hover { color: var(--primary); border-color: var(--primary); }
+
+/* ---------- 统计卡片 ---------- */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
+.stat-card {
+  background: #f9fafb; border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 18px 16px; text-align: center;
+}
+.stat-card .num { font-size: 28px; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
+.stat-card .num.primary { color: var(--primary); }
+.stat-card .num.success { color: var(--success); }
+.stat-card .lbl { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+/* ---------- 评测结果彩条（LeetCode 测试点结果样式） ---------- */
+.verdict-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.verdict-case {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 12px; border-radius: 6px; font-size: 13px;
+  border: 1px solid var(--border); background: #fff; color: var(--text);
+}
+.verdict-case b { font-family: var(--mono); font-weight: 600; }
+.verdict-case.ac { color: var(--success); background: #e7f6ec; border-color: #bbe7c8; }
+.verdict-case.wa { color: var(--danger); background: #fdeaea; border-color: #f5c6c6; }
+.verdict-case.tle { color: var(--warning); background: #fef3e2; border-color: #f2dcae; }
+.verdict-case.mle { color: var(--violet); background: #f3e8ff; border-color: #ddc8f5; }
+.verdict-case.re { color: var(--danger); background: #fdeaea; border-color: #f5c6c6; }
+.verdict-case.ce { color: var(--warning); background: #fef3e2; border-color: #f2dcae; }
+.verdict-case.unk { color: var(--muted); background: #f3f4f6; }
+
+/* ---------- 进度条（AI 命题） ---------- */
+.progress-bar { background: #eef1f4; border-radius: 999px; height: 10px; overflow: hidden; margin: 10px 0; }
 .progress-fill {
-  background: #2563eb; height: 100%; width: 0;
-  transition: width .3s ease;
+  background: linear-gradient(90deg, #3b82f6, #2563eb);
+  height: 100%; width: 0; border-radius: 999px; transition: width .4s ease;
 }
-.progress-fill.done { background: #16a34a; }
-.progress-fill.fail { background: #dc2626; }
+.progress-fill.done { background: var(--success); }
+.progress-fill.fail { background: var(--danger); }
+/* 表格内联迷你进度条（任务列表进度列） */
+.progress-inline { margin: 0; width: 90px; display: inline-block; vertical-align: middle; }
 
-/* 提示条 */
-#toast {
-  position: fixed; top: 68px; right: 24px; max-width: 360px;
-  background: #16a34a; color: #fff; padding: 10px 16px;
-  border-radius: 6px; font-size: 14px; opacity: 0;
-  transition: opacity .25s; pointer-events: none; z-index: 100;
+/* ---------- 登录/注册分栏（LeetCode 风格品牌面板） ---------- */
+.auth-wrap {
+  max-width: 880px; margin: 56px auto; display: grid; grid-template-columns: 1fr 1fr;
+  border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+  box-shadow: var(--shadow); background: #fff;
 }
-#toast.show { opacity: 1; }
-#toast.error { background: #dc2626; }
+.auth-brand {
+  background: linear-gradient(150deg, #1d4ed8 0%, #7c3aed 100%);
+  color: #fff; padding: 44px 36px; display: flex; flex-direction: column; justify-content: center; gap: 14px;
+}
+.auth-brand h1 { font-size: 26px; font-weight: 800; }
+.auth-brand p { color: rgba(255, 255, 255, .85); font-size: 14px; }
+.auth-brand ul { list-style: none; margin-top: 8px; }
+.auth-brand li { padding: 6px 0; font-size: 14px; color: rgba(255, 255, 255, .9); }
+.auth-form { padding: 44px 36px; }
+.auth-form h2 { font-size: 22px; font-weight: 700; margin-bottom: 20px; }
+
+/* ---------- 空状态 / 提示 ---------- */
+.empty { text-align: center; padding: 48px 16px; color: var(--muted); }
+.empty .icon { font-size: 44px; margin-bottom: 8px; }
+.empty p { margin: 6px 0; }
+
+/* ---------- Toast（深色气泡） ---------- */
+#toast {
+  position: fixed; top: 70px; right: 24px; max-width: 380px; z-index: 100;
+  background: #111827; color: #fff; padding: 12px 18px; border-radius: 10px;
+  font-size: 14px; box-shadow: var(--shadow);
+  opacity: 0; transform: translateY(-8px); transition: .25s; pointer-events: none;
+}
+#toast.show { opacity: 1; transform: none; }
+#toast.error { background: var(--danger); }
+
+/* ---------- 响应式 ---------- */
+@media (max-width: 900px) {
+  .sample-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .auth-wrap { grid-template-columns: 1fr; }
+  .auth-brand { display: none; }
+  .form-grid { grid-template-columns: 1fr; }
+  .navbar-inner { gap: 12px; }
+  .brand span:last-child { display: none; }
+}

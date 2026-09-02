@@ -48,12 +48,53 @@ function escapeHtml(s) {
   }[c]));
 }
 
+// ---------- 共享视图辅助（设计系统契约，见 style.css） ----------
+
+// 难度徽章：LeetCode 配色（简单青绿 / 中等金黄 / 困难红）
+function diffClass(difficulty) {
+  const s = String(difficulty || "").toLowerCase();
+  if (/(简|易|入门|easy)/.test(s)) return "diff-easy";
+  if (/(难|困|hard)/.test(s)) return "diff-hard";
+  return "diff-medium";
+}
+function diffChip(difficulty) {
+  if (!difficulty) return "";
+  return `<span class="diff-chip ${diffClass(difficulty)}">${escapeHtml(difficulty)}</span>`;
+}
+
+// 评测结果徽章/彩条（单测试点结果）
+const VERDICT_TEXT = {
+  AC: "通过", WA: "答案错误", TLE: "超出时间限制", MLE: "超出内存限制",
+  RE: "运行时错误", CE: "编译错误", UNK: "未知",
+};
+const verdictClass = (r) => String(r || "unk").toLowerCase();
+function verdictPill(result, count) {
+  const r = String(result || "UNK").toUpperCase();
+  const cls = verdictClass(r);
+  return `<span class="verdict-case ${cls}"><b>${escapeHtml(r)}</b>${VERDICT_TEXT[r] || ""}${count != null ? ` × ${count}` : ""}</span>`;
+}
+
+// 复制按钮绑定：<button class="copy-btn" data-copy="...">复制</button>
+function bindCopyButtons(root = document) {
+  root.querySelectorAll(".copy-btn").forEach((btn) => {
+    btn.onclick = async () => {
+      const text = btn.dataset.copy || "";
+      try {
+        await navigator.clipboard.writeText(text);
+        toast("已复制到剪贴板");
+      } catch {
+        toast("复制失败，请手动选择复制", false);
+      }
+    };
+  });
+}
+
 // 未登录（或会话过期）时的统一提示卡片
 function unauthHtml(msg = "该页面需要登录后查看") {
   return `
-    <div class="card">
-      <h2>需要登录</h2>
-      <p class="muted">${msg}</p>
+    <div class="card empty">
+      <div class="icon">🔒</div>
+      <p>${msg}</p>
       <p><a href="#/login" class="btn">去登录</a></p>
     </div>`;
 }

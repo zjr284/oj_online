@@ -52,7 +52,24 @@
       "Bash(.venv/bin/pytest -q tests/test_ai.py::test_cancel_sse_notifies tests/test_ai.py::test_events_sse)",
       "Bash(g++ --version)",
       "Bash(sqlite3 /home/kkk/code/oj_online/data/oj.db \"SELECT name, file_ext, compile_cmd, run_cmd FROM languages;\")",
-      "Bash(.venv/bin/pytest -q tests/test_submissions.py)"
+      "Bash(.venv/bin/pytest -q tests/test_submissions.py)",
+      "Bash(awk '{print $6, $7}')",
+      "Bash(node --check /home/kkk/code/oj_online/static/js/views/problems.js)",
+      "Bash(node --check /home/kkk/code/oj_online/static/js/views/auth.js)",
+      "Bash(node --check /home/kkk/code/oj_online/static/js/views/user.js)",
+      "Bash(node --check /home/kkk/code/oj_online/static/js/views/submissions.js)",
+      "Bash(node --check /home/kkk/code/oj_online/static/js/views/ai.js)",
+      "Bash(node --check static/js/views/submissions.js)",
+      "Bash(curl -s -o /dev/null -w \"css: %{http_code}\\\\n\" http://127.0.0.1:8000/css/style.css)",
+      "Bash(curl -s -o /dev/null -w \"app.js: %{http_code}\\\\n\" http://127.0.0.1:8000/js/app.js)",
+      "Bash(curl -s http://127.0.0.1:8000/css/style.css)",
+      "Bash(node --check js/views/problems.js)",
+      "Bash(node --check js/views/ai.js)",
+      "Bash(echo \"two-col refs: $?\")",
+      "Bash(node -e ' *)",
+      "Bash(node --check js/markdown.js)",
+      "Bash(curl -s -o /dev/null -w \"markdown.js: %{http_code}\\\\n\" http://127.0.0.1:8000/js/markdown.js)",
+      "Bash(/home/kkk/code/oj_online/.venv/bin/python -c \"import streamlit\")"
     ]
   }
 }

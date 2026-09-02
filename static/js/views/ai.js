@@ -19,9 +19,11 @@ Views.aiHome = async () => {
   try { tasks = await api.get("/api/ai/problem-tasks/"); } catch (e) { /* 忽略 */ }
 
   app.innerHTML = `
-    <div class="card">
-      <h2>AI 智能命题</h2>
-      <p class="muted">配置大模型后，输入命题需求即可自动生成符合题库规范的题目，实时查看进度并可导入题库。</p>
+    <div class="page-head">
+      <div>
+        <h1>AI 智能命题</h1>
+        <p class="sub">配置大模型后，输入命题需求即可自动生成符合题库规范的题目，实时查看进度并可导入题库。</p>
+      </div>
     </div>
     <div class="card">
       <h2>模型配置</h2>
@@ -33,8 +35,10 @@ Views.aiHome = async () => {
         <label>模型名称<input name="model" required placeholder="gpt-4o-mini" value="${escapeHtml(cfg.model || "")}"></label>
         <label>模型密钥<input name="api_key" type="password" required placeholder="${cfg.api_key_configured ? "密钥不回显，保存时请重新填写" : "sk-..."}"></label>
         <p class="muted">⚠ 提示：不同模型、不同时段的计费价格可能不同（部分厂商设有错峰优惠时段），请按实际调用时段的官方价格填写。</p>
-        <label>输入价格（元/计价单位，可选）<input name="input_price" type="number" step="any" min="0" value="${cfg.input_price ?? ""}" placeholder="留空则无法自动计算费用"></label>
-        <label>输出价格（元/计价单位，可选）<input name="output_price" type="number" step="any" min="0" value="${cfg.output_price ?? ""}" placeholder="留空则无法自动计算费用"></label>
+        <div class="form-grid">
+          <label>输入价格（元/计价单位，可选）<input name="input_price" type="number" step="any" min="0" value="${cfg.input_price ?? ""}" placeholder="留空则无法自动计算费用"></label>
+          <label>输出价格（元/计价单位，可选）<input name="output_price" type="number" step="any" min="0" value="${cfg.output_price ?? ""}" placeholder="留空则无法自动计算费用"></label>
+        </div>
         <label>计价单位（Token 数）<input name="price_unit" type="number" min="1" value="${cfg.price_unit ?? 1000000}"></label>
         <button type="submit" class="btn">保存配置</button>
       </form>
@@ -57,15 +61,20 @@ Views.aiHome = async () => {
       ${tasks.length ? `
         <table class="table">
           <thead><tr><th>ID</th><th>状态</th><th>进度</th><th>模型</th><th>创建时间</th></tr></thead>
-          <tbody>${tasks.map((t) => `
-            <tr>
-              <td><a href="#/ai/tasks/${t.task_id}">#${t.task_id}</a></td>
-              <td>${aiStatusBadge(t.status)}</td>
-              <td>${t.status === "running" ? Math.round(t.progress * 100) + "%" : "—"}</td>
-              <td>${escapeHtml(t.model || "—")}</td>
-              <td>${escapeHtml(t.created_at || "—")}</td>
-            </tr>`).join("")}</tbody>
-        </table>` : '<p class="muted">暂无任务。</p>'}
+          <tbody>${tasks.map((t) => {
+            const pct = Math.round((t.progress || 0) * 100);
+            return `
+              <tr>
+                <td class="pid"><a href="#/ai/tasks/${t.task_id}">#${t.task_id}</a></td>
+                <td>${aiStatusBadge(t.status)}</td>
+                <td>${t.status === "running"
+                  ? `<div class="progress-bar progress-inline"><div class="progress-fill" style="width:${Math.max(pct, 2)}%"></div></div> <span class="muted">${pct}%</span>`
+                  : "—"}</td>
+                <td>${escapeHtml(t.model || "—")}</td>
+                <td>${escapeHtml(t.created_at || "—")}</td>
+              </tr>`;
+          }).join("")}</tbody>
+        </table>` : `<div class="empty"><div class="icon">✨</div><p>暂无任务，创建第一个命题任务吧</p></div>`}
     </div>`;
 
   document.getElementById("ai-config-form").onsubmit = async (e) => {
@@ -110,32 +119,43 @@ function renderResult(result, usage, problemId) {
     unknown: "未填写输入/输出价格，无法自动计算费用；可在模型配置中填写价格（注意不同时段价格可能不同）。",
   }[u.price_source] || "";
   return `
-    <div class="card">
+    <div class="card problem-desc">
       <h2>生成的题目：${escapeHtml(result.title)} <span class="muted">(${escapeHtml(result.id)})</span></h2>
       <p class="muted">
         难度 ${escapeHtml(result.difficulty || "—")} · 时间限制 ${result.time_limit}s · 内存限制 ${result.memory_limit}MB
-        ${result.tags && result.tags.length ? " · " + result.tags.map((t) => escapeHtml(t)).join(" ") : ""}
+        ${result.tags && result.tags.length ? " · " + result.tags.map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join("") : ""}
       </p>
-      <h3>题目描述</h3><pre class="wrap">${escapeHtml(result.description)}</pre>
-      <h3>输入格式</h3><pre class="wrap">${escapeHtml(result.input_description)}</pre>
-      <h3>输出格式</h3><pre class="wrap">${escapeHtml(result.output_description)}</pre>
-      ${result.samples.map((s, i) => `<div class="sample"><h3>样例 ${i + 1}</h3><pre>输入\n${escapeHtml(s.input)}\n\n输出\n${escapeHtml(s.output)}</pre></div>`).join("")}
-      <h3>数据范围</h3><pre class="wrap">${escapeHtml(result.constraints)}</pre>
+      <h3>题目描述</h3>${renderMarkdown(result.description)}
+      <h3>输入格式</h3>${renderMarkdown(result.input_description)}
+      <h3>输出格式</h3>${renderMarkdown(result.output_description)}
+      ${(result.samples || []).length ? `
+        <h3>样例</h3>
+        <div class="sample-grid">
+          ${result.samples.map((s, i) => `
+            <div class="sample-box">
+              <div class="sample-head"><span>样例 ${i + 1} · 输入</span><button type="button" class="copy-btn" data-copy="${escapeHtml(s.input)}">复制</button></div>
+              <pre>${escapeHtml(s.input)}</pre>
+            </div>
+            <div class="sample-box">
+              <div class="sample-head"><span>样例 ${i + 1} · 输出</span><button type="button" class="copy-btn" data-copy="${escapeHtml(s.output)}">复制</button></div>
+              <pre>${escapeHtml(s.output)}</pre>
+            </div>`).join("")}
+        </div>` : ""}
+      <h3>数据范围</h3>${renderMarkdown(result.constraints)}
       <h3>测试点（${result.testcases.length} 个）</h3>
-      <p class="muted">${result.testcases.map((t) => escapeHtml(t.id || "?")).join(" · ")}</p>
-      ${result.hint ? `<h3>提示</h3><pre class="wrap">${escapeHtml(result.hint)}</pre>` : ""}
+      <div class="verdict-strip">${result.testcases.map((t) => `<span class="verdict-case unk"><b>#${escapeHtml(t.id || "?")}</b>测试点</span>`).join("")}</div>
+      ${result.hint ? `<h3>提示</h3>${renderMarkdown(result.hint)}` : ""}
       <div class="actions">
         <button id="ai-import-btn" class="btn">${problemId ? `保存修改到 ${escapeHtml(problemId)}` : "保存为新题目"}</button>
-        <a href="#/ai" class="btn gray">返回 AI 命题</a>
       </div>
     </div>
     <div class="card">
       <h2>Token 用量与费用</h2>
       <table class="table">
-        <tr><td>输入 Token</td><td>${u.input_tokens ?? "—"}</td></tr>
-        <tr><td>输出 Token</td><td>${u.output_tokens ?? "—"}</td></tr>
-        <tr><td>总 Token</td><td>${u.total_tokens ?? "—"}</td></tr>
-        <tr><td>费用</td><td>${u.cost == null ? "—" : `${u.cost} ${escapeHtml(u.currency || "")}`}</td></tr>
+        <tr><td>输入 Token</td><td class="num">${u.input_tokens ?? "—"}</td></tr>
+        <tr><td>输出 Token</td><td class="num">${u.output_tokens ?? "—"}</td></tr>
+        <tr><td>总 Token</td><td class="num">${u.total_tokens ?? "—"}</td></tr>
+        <tr><td>费用</td><td class="num">${u.cost == null ? "—" : `${u.cost} ${escapeHtml(u.currency || "")}`}</td></tr>
       </table>
       <p class="muted">计价依据：${escapeHtml(priceNote || "未配置价格")}${u.estimated ? "；模型接口未返回 Token 用量，按字符数/4 估算。" : ""}</p>
     </div>`;
@@ -183,9 +203,14 @@ Views.aiTaskDetail = async (id) => {
     const active = data.status === "pending" || data.status === "running";
     app.innerHTML = `
       <div class="card">
-        <h2>AI 命题任务 #${data.task_id} ${aiStatusBadge(data.status)}</h2>
-        <p class="muted">${escapeHtml(data.requirement)}${data.problem_id ? `（改编自 ${escapeHtml(data.problem_id)}）` : ""}</p>
-        <p class="muted">模型 ${escapeHtml(data.model || "—")} · 创建于 ${escapeHtml(data.created_at || "—")}</p>
+        <div class="page-head">
+          <div>
+            <h1>AI 命题任务 #${data.task_id}</h1>
+            <p class="sub">${escapeHtml(data.requirement)}${data.problem_id ? `（改编自 ${escapeHtml(data.problem_id)}）` : ""}</p>
+            <p class="sub">模型 ${escapeHtml(data.model || "—")} · 创建于 ${escapeHtml(data.created_at || "—")}</p>
+          </div>
+          <div class="actions">${aiStatusBadge(data.status)}</div>
+        </div>
         <div class="progress-bar">
           <div class="progress-fill ${data.status === "done" ? "done" : (data.status === "failed" || data.status === "cancelled") ? "fail" : ""}" style="width:${active ? Math.max(pct, 2) : (data.status === "done" ? 100 : pct)}%"></div>
         </div>
@@ -197,10 +222,11 @@ Views.aiTaskDetail = async (id) => {
     if (data.status === "done" && data.result) {
       extra.innerHTML = renderResult(data.result, data.usage, data.problem_id);
       bindImport(data.result, data.problem_id);
+      bindCopyButtons(extra);   // 样例复制按钮（renderResult 生成的 copy-btn）
     } else if (data.status === "failed") {
-      extra.innerHTML = `<div class="card"><h2>任务失败</h2><pre class="wrap">${escapeHtml((data.result && data.result.error) || "未知错误")}</pre></div>`;
+      extra.innerHTML = `<div class="card"><h2>任务失败</h2><pre class="code-dark">${escapeHtml((data.result && data.result.error) || "未知错误")}</pre></div>`;
     } else if (data.status === "cancelled") {
-      extra.innerHTML = `<div class="card"><h2>任务已中断</h2><p class="muted">后台执行已终止，可返回 AI 命题页重新创建任务。</p></div>`;
+      extra.innerHTML = `<div class="card empty"><div class="icon">🛑</div><p>任务已中断，后台执行已终止，可返回 AI 命题页重新创建任务。</p></div>`;
     }
     const cancelBtn = document.getElementById("ai-cancel-btn");
     if (cancelBtn) cancelBtn.onclick = async () => {

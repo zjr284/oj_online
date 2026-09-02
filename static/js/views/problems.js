@@ -1,32 +1,75 @@
-// 题目视图：列表 / 详情 / 新建与编辑（Step 1 + Step 6 前端）
+// 题目视图：列表 / 详情 / 新建与编辑（Step 1 + Step 6 前端，洛谷 / LeetCode 风格版式）
 Views.problemList = async () => {
-  document.getElementById("app").innerHTML =
-    `<div class="card"><h2>题目列表</h2><p id="plist" class="muted">加载中…</p></div>`;
+  const app = document.getElementById("app");
+  // 加载骨架：页面头 + 加载提示卡片
+  app.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h1>题目列表</h1>
+        <div class="sub">加载中…</div>
+      </div>
+      ${currentUser ? `<div class="actions"><a href="#/problems/new" class="btn">新建题目</a></div>` : ""}
+    </div>
+    <div class="card"><p class="muted">加载中…</p></div>`;
 
   let problems;
   try {
     problems = await api.get("/api/problems/");
   } catch (err) {
     if (err.code === 401) {
-      document.getElementById("app").innerHTML = unauthHtml("请先登录后查看题目");
+      app.innerHTML = unauthHtml("请先登录后查看题目");
       return;
     }
-    document.getElementById("plist").textContent = `加载失败：${err.message}`;
+    app.innerHTML = `<div class="card">加载失败：${escapeHtml(err.message)}</div>`;
     return;
   }
 
-  const rows = problems
-    .map((p) => `<tr><td><a href="#/problems/${encodeURIComponent(p.id)}">${escapeHtml(p.id)}</a></td><td>${escapeHtml(p.title)}</td></tr>`)
+  // 表格行渲染（初次渲染与搜索过滤共用；所有用户可控字段均转义）
+  const rows = (list) => list
+    .map((p) => {
+      const href = `#/problems/${encodeURIComponent(p.id)}`;
+      const tags = (p.tags || []).map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join("");
+      return `<tr>
+        <td class="pid">${escapeHtml(p.id)}</td>
+        <td>
+          <a class="ptitle" href="${href}">${escapeHtml(p.title)}</a>
+          ${tags ? `<div>${tags}</div>` : ""}
+        </td>
+        <td>${diffChip(p.difficulty)}</td>
+        <td class="muted">${escapeHtml(p.source || "—")} · ${escapeHtml(p.author || "—")}</td>
+      </tr>`;
+    })
     .join("");
-  document.getElementById("app").innerHTML = `
+
+  const emptyRow = (msg) => `<tr><td colspan="4"><div class="empty">${msg}</div></td></tr>`;
+
+  app.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h1>题目列表</h1>
+        <div class="sub">共 ${problems.length} 题</div>
+      </div>
+      ${currentUser ? `<div class="actions"><a href="#/problems/new" class="btn">新建题目</a></div>` : ""}
+    </div>
+    <div class="toolbar">
+      <input id="search-input" class="search" placeholder="搜索题目 ID / 标题 / 标签">
+    </div>
     <div class="card">
-      <h2>题目列表</h2>
-      ${currentUser ? `<p><a href="#/problems/new" class="btn">新建题目</a></p>` : ""}
       <table class="table">
-        <thead><tr><th>ID</th><th>标题</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="2">暂无题目</td></tr>'}</tbody>
+        <thead><tr><th>ID</th><th>标题</th><th>难度</th><th>来源 / 作者</th></tr></thead>
+        <tbody id="problem-rows">${problems.length ? rows(problems) : emptyRow("暂无题目")}</tbody>
       </table>
     </div>`;
+
+  // 客户端实时搜索：按 ID / 标题 / 标签 / 难度 / 作者过滤已加载的题目列表
+  const tbody = document.getElementById("problem-rows");
+  document.getElementById("search-input").oninput = (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    const list = problems.filter((p) =>
+      [p.id, p.title, (p.tags || []).join(" "), p.difficulty, p.author]
+        .some((v) => String(v || "").toLowerCase().includes(q)));
+    tbody.innerHTML = list.length ? rows(list) : emptyRow("未找到匹配的题目");
+  };
 };
 
 Views.problemDetail = async (id) => {
@@ -43,33 +86,47 @@ Views.problemDetail = async (id) => {
     return;
   }
 
-  const samples = p.samples
-    .map((s, i) => `<div class="sample"><h3>样例 ${i + 1}</h3><pre>输入\n${escapeHtml(s.input)}\n\n输出\n${escapeHtml(s.output)}</pre></div>`)
+  const tags = (p.tags || []).map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join("");
+  // 样例双栏（洛谷风格）：每个样例渲染输入 / 输出两个对照框，右上角复制按钮
+  const samples = (p.samples || [])
+    .map((s, i) => `
+      <div class="sample-box">
+        <div class="sample-head">样例 ${i + 1} · 输入
+          <button class="copy-btn" data-copy="${escapeHtml(s.input)}">复制</button>
+        </div>
+        <pre>${escapeHtml(s.input)}</pre>
+      </div>
+      <div class="sample-box">
+        <div class="sample-head">样例 ${i + 1} · 输出
+          <button class="copy-btn" data-copy="${escapeHtml(s.output)}">复制</button>
+        </div>
+        <pre>${escapeHtml(s.output)}</pre>
+      </div>`)
     .join("");
-  const tags = p.tags.map((t) => `<span class="badge">${escapeHtml(t)}</span>`).join(" ");
 
   app.innerHTML = `
-    <div class="card">
-      <h2>${escapeHtml(p.title)} <span class="muted">(${escapeHtml(p.id)})</span></h2>
-      <p class="muted">
-        时间限制 ${p.time_limit}s · 内存限制 ${p.memory_limit}MB
-        ${p.author ? ` · 作者 ${escapeHtml(p.author)}` : ""}
-        ${p.difficulty ? ` · 难度 ${escapeHtml(p.difficulty)}` : ""}
-      </p>
-      ${tags ? `<p>${tags}</p>` : ""}
-      <h3>题目描述</h3><pre class="wrap">${escapeHtml(p.description)}</pre>
-      <h3>输入格式</h3><pre class="wrap">${escapeHtml(p.input_description)}</pre>
-      <h3>输出格式</h3><pre class="wrap">${escapeHtml(p.output_description)}</pre>
-      ${samples}
-      <h3>数据范围</h3><pre class="wrap">${escapeHtml(p.constraints)}</pre>
-      ${p.hint ? `<h3>提示</h3><pre class="wrap">${escapeHtml(p.hint)}</pre>` : ""}
-      <div class="actions">
-        ${currentUser ? `<a href="#/problems/${encodeURIComponent(p.id)}/edit" class="btn gray">编辑</a>` : ""}
-        ${isAdmin() ? `<button id="del-btn" class="btn danger">删除</button>` : ""}
-        <a href="#/submissions?problem_id=${encodeURIComponent(p.id)}" class="btn gray">提交记录</a>
-      </div>
+    <div class="card problem-desc">
+        <h1>${escapeHtml(p.title)} ${diffChip(p.difficulty)}</h1>
+        ${tags ? `<p class="tags-row">${tags}</p>` : ""}
+        <p class="muted meta-line">
+          题目 ID ${escapeHtml(p.id)} · 时间限制 ${p.time_limit}s · 内存限制 ${p.memory_limit}MB${p.author ? ` · 作者 ${escapeHtml(p.author)}` : ""}
+        </p>
+        <h3>题目描述</h3>${renderMarkdown(p.description)}
+        <h3>输入格式</h3>${renderMarkdown(p.input_description)}
+        <h3>输出格式</h3>${renderMarkdown(p.output_description)}
+        ${samples ? `<h3>样例</h3><div class="sample-grid">${samples}</div>` : ""}
+        <h3>数据范围</h3>${renderMarkdown(p.constraints)}
+        ${p.hint ? `<h3>提示</h3>${renderMarkdown(p.hint)}` : ""}
+        <div class="actions">
+          ${currentUser ? `<a href="#/problems/${encodeURIComponent(p.id)}/edit" class="btn gray">编辑</a>` : ""}
+          ${isAdmin() ? `<button id="del-btn" class="btn danger">删除</button>` : ""}
+          <a href="#/submissions?problem_id=${encodeURIComponent(p.id)}" class="btn gray">提交记录</a>
+        </div>
     </div>
     <div class="card" id="submit-panel"></div>`;
+
+  // 样例复制按钮（data-copy 已随 escapeHtml 转义引号）
+  bindCopyButtons();
 
   // 提交面板（登录后可提交，Step 6）
   const panel = document.getElementById("submit-panel");
@@ -143,19 +200,21 @@ Views.problemEdit = async (id) => {
       <form id="problem-form">
         <label>ID（唯一标识）<input name="id" required ${isEdit ? "disabled" : ""} value="${escapeHtml(p.id)}"></label>
         <label>标题<input name="title" required value="${escapeHtml(p.title)}"></label>
-        <label>题目描述<textarea name="description" required>${escapeHtml(p.description)}</textarea></label>
-        <label>输入格式<textarea name="input_description" required>${escapeHtml(p.input_description)}</textarea></label>
-        <label>输出格式<textarea name="output_description" required>${escapeHtml(p.output_description)}</textarea></label>
+        <label>题目描述（支持 Markdown 语法）<textarea name="description" required>${escapeHtml(p.description)}</textarea></label>
+        <label>输入格式（支持 Markdown 语法）<textarea name="input_description" required>${escapeHtml(p.input_description)}</textarea></label>
+        <label>输出格式（支持 Markdown 语法）<textarea name="output_description" required>${escapeHtml(p.output_description)}</textarea></label>
         <label>样例（JSON 数组：[{"input": "...", "output": "..."}]）<textarea name="samples" class="code" required>${escapeHtml(JSON.stringify(p.samples, null, 2))}</textarea></label>
-        <label>数据范围<textarea name="constraints" required>${escapeHtml(p.constraints)}</textarea></label>
+        <label>数据范围（支持 Markdown 语法）<textarea name="constraints" required>${escapeHtml(p.constraints)}</textarea></label>
         <label>测试点（JSON 数组）<textarea name="testcases" class="code" required>${escapeHtml(JSON.stringify(p.testcases, null, 2))}</textarea></label>
-        <label>提示<input name="hint" value="${escapeHtml(p.hint)}"></label>
+        <label>提示（支持 Markdown 语法）<input name="hint" value="${escapeHtml(p.hint)}"></label>
         <label>来源<input name="source" value="${escapeHtml(p.source)}"></label>
         <label>标签（逗号分隔）<input name="tags" value="${escapeHtml(p.tags.join(", "))}"></label>
-        <label>时间限制（秒）<input name="time_limit" type="number" step="0.1" value="${p.time_limit}"></label>
-        <label>内存限制（MB）<input name="memory_limit" type="number" value="${p.memory_limit}"></label>
-        <label>作者<input name="author" value="${escapeHtml(p.author)}"></label>
-        <label>难度<input name="difficulty" value="${escapeHtml(p.difficulty)}"></label>
+        <div class="form-grid">
+          <label>时间限制（秒）<input name="time_limit" type="number" step="0.1" value="${p.time_limit}"></label>
+          <label>内存限制（MB）<input name="memory_limit" type="number" value="${p.memory_limit}"></label>
+          <label>作者<input name="author" value="${escapeHtml(p.author)}"></label>
+          <label>难度<input name="difficulty" value="${escapeHtml(p.difficulty)}"></label>
+        </div>
         <div class="actions">
           <button type="submit" class="btn">保存</button>
           <a href="${isEdit ? `#/problems/${encodeURIComponent(id)}` : "#/problems"}" class="btn gray">取消</a>
