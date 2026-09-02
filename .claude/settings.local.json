@@ -69,7 +69,14 @@
       "Bash(node -e ' *)",
       "Bash(node --check js/markdown.js)",
       "Bash(curl -s -o /dev/null -w \"markdown.js: %{http_code}\\\\n\" http://127.0.0.1:8000/js/markdown.js)",
-      "Bash(/home/kkk/code/oj_online/.venv/bin/python -c \"import streamlit\")"
+      "Bash(/home/kkk/code/oj_online/.venv/bin/python -c \"import streamlit\")",
+      "Bash(/home/kkk/code/oj_online/.venv/bin/pip install *)",
+      "Bash(/home/kkk/code/oj_online/.venv/bin/python -c \"import streamlit; print\\('streamlit', streamlit.__version__\\)\")",
+      "Bash(.venv/bin/python -m py_compile app.py)",
+      "Bash(curl -s -o /dev/null -w \"backend: %{http_code}\\\\n\" http://127.0.0.1:8000/api/languages/)",
+      "Bash(sqlite3 /home/kkk/code/oj_online/data/oj.db \"SELECT id, username, role FROM users;\")",
+      "Bash(/home/kkk/code/oj_online/.venv/bin/python -c ' *)",
+      "Bash(sqlite3 /home/kkk/code/oj_online/data/oj.db \"UPDATE users SET role='admin' WHERE username='admin'; SELECT id, username, role FROM users;\")"
     ]
   }
 }
