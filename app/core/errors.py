@@ -24,8 +24,8 @@ class ApiError(Exception):
         self.msg = msg
 
 
-def ok(data=None, msg: str = "ok") -> dict:
-    """成功响应的统一格式。"""
+def ok(data=None, msg: str = "success") -> dict:
+    """成功响应的统一格式（api.md 示例默认 msg 为 "success"）。"""
     return {"code": 200, "msg": msg, "data": data}
 
 

@@ -24,6 +24,9 @@ class Submission(Base):
 
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # api.md：counts = 本题总分数（测试点数目 * 10）
+    total_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 各结果统计（如 {"AC": 8, "WA": 2}），作为 extra 字段 "verdicts" 供前端展示
     counts: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     compile_info: Mapped[str | None] = mapped_column(Text, nullable=True)
     run_info: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -63,15 +63,15 @@ async def user_stats(db: AsyncSession, user_id: int) -> tuple[int, int]:
 
 
 def user_public(user: User) -> dict:
-    """注册/登录返回的用户信息。"""
-    return {"user_id": user.id, "username": user.username, "role": user.role}
+    """注册/登录返回的用户信息（api.md 示例：user_id 为字符串）。"""
+    return {"user_id": str(user.id), "username": user.username, "role": user.role}
 
 
 async def user_detail(db: AsyncSession, user: User) -> dict:
     """用户详情（含统计信息）。"""
     submit_count, resolve_count = await user_stats(db, user.id)
     return {
-        "user_id": user.id,
+        "user_id": str(user.id),
         "username": user.username,
         "join_time": user.join_time.strftime("%Y-%m-%d"),
         "role": user.role,

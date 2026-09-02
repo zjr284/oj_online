@@ -6,9 +6,11 @@ async def test_register_login_logout(client):
     # 注册
     resp = await client.post("/api/users/", json={"username": "bob", "password": "secret1"})
     assert resp.status_code == 200
+    assert resp.json()["msg"] == "register success"
     data = resp.json()["data"]
     assert data["username"] == "bob"
     assert data["role"] == "user"
+    assert data["user_id"] == str(data["user_id"])  # api.md 示例：user_id 为字符串
     assert data["submit_count"] == 0
     assert data["resolve_count"] == 0
 
@@ -24,10 +26,11 @@ async def test_register_login_logout(client):
     resp = await client.post("/api/auth/logout")
     assert resp.status_code == 401
 
-    # 登录 / 登出
+    # 登录 / 登出（api.md：login success / logout success）
     await login(client, "bob", "secret1")
     resp = await client.post("/api/auth/logout")
     assert resp.status_code == 200
+    assert resp.json()["msg"] == "logout success"
     # 登出后访问需登录接口 → 401
     resp = await client.get("/api/problems/")
     assert resp.status_code == 401
@@ -92,8 +95,15 @@ async def test_admin_create_and_reset(client):
     resp = await client.post("/api/reset/")
     assert resp.status_code == 200
 
+    assert resp.json()["msg"] == "system reset successfully"
+
     # reset 后：会话被清空，需重新登录；dave 消失，admin 仍在
     await login(client, "admin", "admintestpassword")
     resp = await client.get("/api/users/")
     data = resp.json()["data"]
     assert [u["username"] for u in data["users"]] == ["admin"]
+
+    # reset 恢复初始环境：默认语言重新注册
+    resp = await client.get("/api/languages/")
+    assert resp.json()["msg"] == "success"
+    assert set(resp.json()["data"]["name"]) == {"cpp", "python"}

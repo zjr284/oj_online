@@ -17,7 +17,8 @@
 ## 常用命令
 
 ```bash
-.venv/bin/uvicorn app.main:app --reload      # 启动（或 ./run.sh）
+./run.sh                                     # 一键启动：后端(8000)+Streamlit(8501)，已运行则跳过，Ctrl+C 停
+.venv/bin/uvicorn app.main:app --reload      # 仅启动后端（调试用）
 .venv/bin/streamlit run app.py               # Step 6 前端（需后端已启动；OJ_API_BASE 可改后端地址）
 .venv/bin/pytest -q                          # 测试（用独立临时数据目录）
 curl -c jar -X POST localhost:8000/api/auth/login -H 'Content-Type: application/json' -d '{"username":"admin","password":"admintestpassword"}'
@@ -44,4 +45,13 @@ R3：模型调用期间 ticker 每 2s 推进度、cancel 推 final(cancelled) �
 - 提交限流 `config.SUBMIT_RATE_LIMIT`（环境变量 `OJ_SUBMIT_RATE_LIMIT`），测试用 monkeypatch 收紧。
 - log 接口：details 仅管理员/公开题目可见；本人看未公开题目省略 details；
   403（已登录无权）与 200 都记 AccessLog；提交不存在返回 404 且不记审计。
-- 提交列表 error/pending 条目只返回 {submission_id, status}（api.md）；submission_id 为字符串。
+- 提交列表 error/pending 条目只返回 {submission_id, status}（api.md）；submission_id、user_id 均为字符串。
+- api.md 字段语义（2026-09 审计后对齐）：`counts` = 本题总分数（测试点数目×10，DB 列 total_score）；
+  各结果统计经 extra 字段 `verdicts` 返回（DB 列 counts 存 dict）；
+  `compile_info`/`run_info` 为 {"result", "message"} 对象（DB 存 JSON 字符串）；
+  成功 msg 默认 "success"，各接口特定 msg 见 api.md 示例（add success / login success 等）。
+- 安全校验：题目 id 限 `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`（防经 body 的路径穿越）、
+  必填字段非空、samples/testcases 非空、time/memory 限制为正；语言 name/file_ext 限安全字符集。
+- 评测沙箱：运行与编译阶段均限 RLIMIT_CPU/RLIMIT_FSIZE/RLIMIT_NPROC(4096)；
+  NPROC 取 4096 是因为 Linux 按 UID 全系统线程数计数（VSCode 等占数百），过低会让 g++ vfork EAGAIN。
+- reset 会重建初始管理员**并恢复默认语言**（python/cpp）。

@@ -74,7 +74,8 @@ async def test_submit_judge_and_list(client):
     data = await wait_status(client, sid)
     assert data["status"] == "success"
     assert data["score"] == 40
-    assert data["counts"] == {"AC": 4}
+    assert data["counts"] == 40           # api.md：本题总分数（4 测试点 × 10）
+    assert data["verdicts"] == {"AC": 4}  # extra：各结果统计
     assert data["compile_info"] is None   # 解释型语言无编译信息
 
     # WA 提交 → error
@@ -82,8 +83,9 @@ async def test_submit_judge_and_list(client):
     data = await wait_status(client, sid2)
     assert data["status"] == "error"
     assert data["score"] == 0
-    assert data["counts"] == {"WA": 4}
-    assert data["run_info"]
+    assert data["counts"] == 40
+    assert data["verdicts"] == {"WA": 4}
+    assert data["run_info"]["result"] == "finished"
 
     # 列表：按题目筛选；error 记录只返回 id 和 status（api.md）
     resp = await client.get("/api/submissions/", params={"problem_id": "sum_2"})
@@ -118,13 +120,15 @@ async def test_tle_and_mle(client):
     sid = await _submit(client, TLE_CODE)
     data = await wait_status(client, sid, timeout=20)
     assert data["status"] == "error"
-    assert data["counts"] == {"TLE": 4}
+    assert data["counts"] == 40
+    assert data["verdicts"] == {"TLE": 4}
 
     # MLE：无限分配内存，限制 64MB
     sid = await _submit(client, MLE_CODE)
     data = await wait_status(client, sid, timeout=20)
     assert data["status"] == "error"
-    assert data["counts"] == {"MLE": 4}
+    assert data["counts"] == 40
+    assert data["verdicts"] == {"MLE": 4}
 
 
 async def test_ce(client):
@@ -138,8 +142,10 @@ async def test_ce(client):
     sid = await _submit(client, "this is not valid c++", language="cpp")
     data = await wait_status(client, sid)
     assert data["status"] == "error"
-    assert data["counts"] == {"CE": 1}
-    assert data["compile_info"]
+    assert data["counts"] == 40
+    assert data["verdicts"] == {"CE": 1}
+    assert data["compile_info"]["result"] == "failed"
+    assert data["compile_info"]["message"]
 
 
 async def test_cpp_compile_and_ac(client):
@@ -155,7 +161,8 @@ async def test_cpp_compile_and_ac(client):
     data = await wait_status(client, sid, timeout=20)
     assert data["status"] == "success"
     assert data["score"] == 40
-    assert data["counts"] == {"AC": 4}
+    assert data["counts"] == 40
+    assert data["verdicts"] == {"AC": 4}
 
 
 async def test_permissions_and_rejudge(client):
@@ -209,3 +216,37 @@ async def test_rate_limit(client, monkeypatch):
 
     resp = await client.post("/api/submissions/", json={"problem_id": "sum_2", "language": "python", "code": AC_CODE})
     assert resp.status_code == 429
+
+
+async def test_language_validation(client):
+    """语言注册配置安全（Step 2 评分点）：非法 name/file_ext/限制 → 400。"""
+    await login(client, "admin", "admintestpassword")
+    base = {"name": "go", "file_ext": ".go", "run_cmd": "go run {src}"}
+
+    # 未登录 → 401
+    await client.post("/api/auth/logout")
+    resp = await client.post("/api/languages/", json=base)
+    assert resp.status_code == 401
+    await login(client, "admin", "admintestpassword")
+
+    # 非法 name / file_ext → 400（杜绝路径分隔符、空扩展名等）
+    for bad in ({"name": "a/b", "file_ext": ".go", "run_cmd": "go run {src}"},
+                {"name": "go", "file_ext": "g/o", "run_cmd": "go run {src}"},
+                {"name": "go", "file_ext": "", "run_cmd": "go run {src}"}):
+        resp = await client.post("/api/languages/", json=bad)
+        assert resp.status_code == 400, bad
+
+    # 非正限制 → 400
+    resp = await client.post("/api/languages/", json={**base, "time_limit": -1})
+    assert resp.status_code == 400
+    resp = await client.post("/api/languages/", json={**base, "memory_limit": 0})
+    assert resp.status_code == 400
+
+    # run_cmd 必须含 {src}/{exe} 占位符（api.md 示例强调路径）
+    resp = await client.post("/api/languages/", json={"name": "go", "file_ext": ".go", "run_cmd": "go run main.go"})
+    assert resp.status_code == 400
+
+    # 合法注册 → 200（msg 对齐 api.md）
+    resp = await client.post("/api/languages/", json=base)
+    assert resp.status_code == 200
+    assert resp.json()["msg"] == "language registered"

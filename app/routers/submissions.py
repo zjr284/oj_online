@@ -8,7 +8,9 @@
 - PUT  /api/submissions/{submission_id}/rejudge 重新评测（仅管理员，覆盖原记录）
 - GET  /api/submissions/{submission_id}/log     测试点明细（Step 5，含可见性与访问审计）
 """
-from fastapi import APIRouter, Depends
+import json
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,18 +34,32 @@ def _fmt_time(dt) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _parse_info(raw: str | None) -> dict | str | None:
+    """解析 compile_info / run_info：新数据为 JSON 对象字符串，解析回 dict。
+
+    兼容旧记录（裸文本）与旧评测结果（原始字符串直接透传）。
+    """
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return raw
+
+
 def _submission_item(sub: Submission) -> dict:
     # api.md：error/pending 状态只返回 id 和 status
     if sub.status in ("pending", "error"):
         return {"submission_id": str(sub.id), "status": sub.status}
     return {
         "submission_id": str(sub.id),
-        "user_id": sub.user_id,
+        "user_id": str(sub.user_id),
         "problem_id": sub.problem_id,
         "language": sub.language,
         "status": sub.status,
         "score": sub.score,
-        "counts": sub.counts,
+        "counts": sub.total_score,   # api.md：本题总分数（测试点数目 * 10）
+        "verdicts": sub.counts,      # extra：各结果统计，供前端彩条展示
         "submit_time": _fmt_time(sub.submit_time),
     }
 
@@ -81,8 +97,8 @@ async def list_submissions(
     user_id: int | None = None,
     problem_id: str | None = None,
     status: str | None = None,
-    page: int | None = None,
-    page_size: int | None = None,
+    page: int | None = Query(None, ge=1),
+    page_size: int | None = Query(None, ge=1),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -125,14 +141,15 @@ async def get_submission(
         raise ApiError(403, "permission denied")
     return ok({
         "submission_id": str(sub.id),
-        "user_id": sub.user_id,
+        "user_id": str(sub.user_id),
         "problem_id": sub.problem_id,
         "language": sub.language,
         "status": sub.status,
         "score": sub.score,
-        "counts": sub.counts,
-        "compile_info": sub.compile_info,
-        "run_info": sub.run_info,
+        "counts": sub.total_score,   # api.md：本题总分数
+        "verdicts": sub.counts,      # extra：各结果统计
+        "compile_info": _parse_info(sub.compile_info),
+        "run_info": _parse_info(sub.run_info),
         "error_info": sub.error_info,
         "code": sub.code,
         "submit_time": _fmt_time(sub.submit_time),
@@ -160,7 +177,7 @@ async def rejudge_submission(
     await db.commit()
 
     judge_service.schedule_judge(sub.id)
-    return ok({"submission_id": str(sub.id), "status": "pending"})
+    return ok({"submission_id": str(sub.id), "status": "pending"}, msg="rejudge started")
 
 
 # ---- Step 5：评测日志 ----
@@ -189,7 +206,7 @@ async def get_submission_log(
         await db.commit()
         raise ApiError(403, "permission denied")
 
-    data = {"score": sub.score, "counts": sub.counts}
+    data = {"score": sub.score, "counts": sub.total_score}
     # details：管理员始终可见；普通用户仅在题目 public_cases=True 时可见（未公开时省略该字段）
     if user.role == "admin" or public:
         rows = (await db.scalars(

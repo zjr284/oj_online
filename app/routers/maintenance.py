@@ -12,6 +12,7 @@ from app.core.deps import SESSION_COOKIE, require_admin
 from app.core.errors import ok
 from app.database import Base, engine, get_db
 from app.models import User
+from app.services.language_service import ensure_languages
 from app.services.user_service import ensure_admin
 
 router = APIRouter(tags=["maintenance"])
@@ -32,8 +33,9 @@ async def reset(
     shutil.rmtree(config.PROBLEMS_DIR, ignore_errors=True)
     config.PROBLEMS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 3. 重建初始管理员
+    # 3. 重建初始管理员与默认语言（恢复系统初始环境）
     await ensure_admin()
+    await ensure_languages()
 
     response.delete_cookie(SESSION_COOKIE, path="/")
-    return ok(None)
+    return ok(None, msg="system reset successfully")

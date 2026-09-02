@@ -58,13 +58,19 @@ class JudgeResult:
         self.detail = detail      # 差异说明 / 错误信息（已脱敏截断）
 
 
-def _set_limits(cpu_seconds: float, max_bytes: int):
-    """preexec_fn：在子进程中收紧资源限制。"""
+def _set_limits(cpu_seconds: float, max_bytes: int, nproc: int = 4096):
+    """preexec_fn：在子进程中收紧资源限制。
+
+    nproc：RLIMIT_NPROC 在 Linux 上按「全系统该 UID 的进程/线程总数」计数
+    （VSCode/终端等多线程应用很容易就占数百），过低会让 g++ 等正常程序
+    fork/vfork 子进程时直接 EAGAIN。取 4096 避免误伤；
+    fork bomb 由 RLIMIT_CPU 兜底（炸弹会迅速烧满 CPU 配额被 SIGXCPU 杀掉）。
+    """
 
     def _apply() -> None:
         resource.setrlimit(resource.RLIMIT_CPU, (int(cpu_seconds) + 1, int(cpu_seconds) + 2))
         resource.setrlimit(resource.RLIMIT_FSIZE, (max_bytes, max_bytes))
-        resource.setrlimit(resource.RLIMIT_NPROC, (32, 32))
+        resource.setrlimit(resource.RLIMIT_NPROC, (nproc, nproc))
 
     return _apply
 
@@ -203,6 +209,8 @@ class JudgeRunner:
                     cwd=str(self.workdir),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
+                    # 编译阶段同样收紧资源：CPU 时间、产物大小（.o/.exe）、子进程数
+                    preexec_fn=_set_limits(COMPILE_TIMEOUT, MAX_OUTPUT_BYTES),
                 )
                 out, err = proc.communicate(timeout=COMPILE_TIMEOUT)
                 text = (out + err).decode(errors="replace")

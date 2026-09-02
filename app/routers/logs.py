@@ -39,14 +39,14 @@ async def list_access_logs(
         stmt = stmt.offset(((page or 1) - 1) * page_size).limit(page_size)
     rows = (await db.scalars(stmt)).all()
 
-    # api.md：直接返回数组
+    # api.md：直接返回数组；示例中 user_id / status 均为字符串
     return ok([
         {
-            "user_id": r.user_id,
+            "user_id": str(r.user_id),
             "problem_id": r.problem_id,
             "action": r.action,
             "time": r.time.strftime("%Y-%m-%d %H:%M:%S"),
-            "status": r.status,
+            "status": str(r.status),
         }
         for r in rows
     ])

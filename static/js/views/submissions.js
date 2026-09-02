@@ -120,23 +120,24 @@ async function loadSubmissionDetail(id) {
   }
 
   // 得分醒目展示（score 非空时）：统计卡片
-  const counts = s.counts || null;
-  const totalCases = counts ? Object.values(counts).reduce((a, b) => a + b, 0) : null;
+  // counts = api.md 本题总分数；verdicts = extra 各结果统计（{AC: n, WA: n, ...}）
+  const totalScore = s.counts ?? null;
   const scoreHtml = s.score != null
     ? `<div class="stat-grid">
          <div class="stat-card"><div class="num">${s.score}</div><div class="lbl">得分</div></div>
-         ${totalCases != null ? `<div class="stat-card"><div class="num">${totalCases}</div><div class="lbl">测试点</div></div>` : ""}
+         ${totalScore != null ? `<div class="stat-card"><div class="num">${totalScore}</div><div class="lbl">总分</div></div>` : ""}
        </div>`
     : "";
 
-  // 统计：counts 为 {AC: n, WA: n, ...}，渲染为 verdict 彩条
-  const countsHtml = counts && Object.keys(counts).length
+  const verdicts = s.verdicts || null;
+  const countsHtml = verdicts && Object.keys(verdicts).length
     ? `<h3>测试点统计</h3>
-       <div class="verdict-strip">${Object.entries(counts).map(([r, n]) => verdictPill(r, n)).join("")}</div>`
+       <div class="verdict-strip">${Object.entries(verdicts).map(([r, n]) => verdictPill(r, n)).join("")}</div>`
     : "";
 
+  const infoText = (v) => (v && typeof v === "object" ? v.message || "" : v || "");
   const infoSection = (title, content) =>
-    content ? `<h3>${title}</h3><pre class="code-dark">${escapeHtml(content)}</pre>` : "";
+    infoText(content) ? `<h3>${title}</h3><pre class="code-dark">${escapeHtml(infoText(content))}</pre>` : "";
 
   app.innerHTML = `
     <div class="card">

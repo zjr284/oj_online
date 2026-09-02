@@ -45,4 +45,4 @@ async def register_language(
         raise ApiError(400, "language already exists")
     db.add(Language(**body.model_dump()))
     await db.commit()
-    return ok({"name": body.name})
+    return ok({"name": body.name}, msg="language registered")

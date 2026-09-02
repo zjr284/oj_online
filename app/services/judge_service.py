@@ -6,6 +6,7 @@
 - requeue_pending：服务重启时重新评测遗留的 pending 提交。
 """
 import asyncio
+import json
 import logging
 import shutil
 import tempfile
@@ -82,11 +83,15 @@ async def _judge(submission_id: int, generation: int, workdir: Path) -> None:
         "memory_limit": language.memory_limit,
     }
 
+    total = len(problem["testcases"]) * POINTS_PER_CASE   # api.md：counts = 本题总分数
+
     runner = JudgeRunner(language_cfg, problem, workdir)
     compiled, compile_info = await runner.compile(sub.code)
     if not compiled:
         # 编译失败：整体 CE（Step 2 结果集合）
-        await _finish(submission_id, generation, "error", 0, {"CE": 1}, compile_info, [])
+        compile_obj = {"result": "failed", "message": compile_info or ""}
+        await _finish(submission_id, generation, "error", 0, {"CE": 1}, compile_obj, [],
+                      total_score=total)
         return
 
     results = []
@@ -97,21 +102,28 @@ async def _judge(submission_id: int, generation: int, workdir: Path) -> None:
     status = "success" if all(r.result == AC for r in results) else "error"
     score = counts.get(AC, 0) * POINTS_PER_CASE
 
-    run_info = None
+    # api.md：run_info = {"result": ..., "message": ...}（运行阶段总体结果）
+    run_msg = f"{len(results)} test cases finished"
     if status == "error":
         first_bad = next((r for r in results if r.result != AC), None)
         if first_bad is not None:
-            run_info = f"first failure at case {first_bad.case_id}: {first_bad.result}"
+            run_msg += f"; first failure at case {first_bad.case_id}: {first_bad.result}"
             if first_bad.detail:
-                run_info += f"\n{first_bad.detail}"
+                run_msg += f"\n{first_bad.detail}"
+    run_info = {"result": "finished", "message": run_msg}
 
-    await _finish(submission_id, generation, status, score, counts, compile_info, results, run_info=run_info)
+    await _finish(submission_id, generation, status, score, counts, compile_info, results,
+                  run_info=run_info, total_score=total)
 
 
 async def _finish(submission_id: int, generation: int, status: str, score: float, counts: dict,
                   compile_info: str | None, results: list, run_info: str | None = None,
-                  error_info: str | None = None) -> None:
-    """写回评测结果。若期间发生了 rejudge（代际变化），丢弃本次结果。"""
+                  error_info: str | None = None, total_score: int | None = None) -> None:
+    """写回评测结果。若期间发生了 rejudge（代际变化），丢弃本次结果。
+
+    compile_info / run_info 以 JSON 字符串落库，响应时解析为 api.md 的对象结构
+    （{"result": ..., "message": ...}）；解释型语言 compile_info 为 None。
+    """
     if _generations.get(submission_id) != generation:
         return
 
@@ -121,9 +133,10 @@ async def _finish(submission_id: int, generation: int, status: str, score: float
             return
         sub.status = status
         sub.score = score
+        sub.total_score = total_score
         sub.counts = counts
-        sub.compile_info = compile_info
-        sub.run_info = run_info
+        sub.compile_info = json.dumps(compile_info, ensure_ascii=False) if compile_info else None
+        sub.run_info = json.dumps(run_info, ensure_ascii=False) if run_info else None
         sub.error_info = error_info
         await db.execute(delete(TestcaseResult).where(TestcaseResult.submission_id == submission_id))
         for r in results:

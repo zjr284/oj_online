@@ -624,6 +624,11 @@ def _poll_submission(sid: str, show_log: bool):
         st.warning("等待超时，可稍后到「评测记录」查看结果。")
 
 
+def _info_text(v):
+    """兼容 compile_info/run_info 的对象结构与旧版裸字符串。"""
+    return v.get("message") if isinstance(v, dict) else v
+
+
 def _render_submission(s: dict, show_log: bool):
     status = s.get("status", "pending")
     st.markdown(f"### 提交 #{s.get('submission_id')} — {STATUS_TEXT.get(status, status)}")
@@ -635,20 +640,22 @@ def _render_submission(s: dict, show_log: bool):
         st.info("⏳ 正在评测，请稍候…")
         return
     score = s.get("score")
-    counts = s.get("counts") or {}
+    counts = s.get("counts")            # api.md：本题总分数
+    verdicts = s.get("verdicts") or {}  # extra：各结果统计
     c1, c2 = st.columns(2)
     c1.metric("得分", score if score is not None else "—")
-    c2.metric("测试点", sum(counts.values()))
-    if counts:
+    c2.metric("总分", counts if counts is not None else "—")
+    if verdicts:
         st.markdown("　".join(
-            f"`{k}` × {v} {VERDICT_TEXT.get(k, '')}" for k, v in counts.items()))
+            f"`{k}` × {v} {VERDICT_TEXT.get(k, '')}" for k, v in verdicts.items()))
     # CE / RE / TLE 等错误明确展示（任务 3）
+    # compile_info / run_info 为 api.md 对象结构 {"result", "message"}，展示 message
     if s.get("compile_info"):
         st.markdown("#### 编译信息（编译错误）")
-        st.code(s["compile_info"])
+        st.code(_info_text(s["compile_info"]))
     if s.get("run_info"):
         st.markdown("#### 运行信息")
-        st.code(s["run_info"])
+        st.code(_info_text(s["run_info"]))
     if s.get("error_info"):
         st.markdown("#### 错误信息")
         st.code(s["error_info"])

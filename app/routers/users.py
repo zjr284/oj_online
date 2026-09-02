@@ -32,7 +32,7 @@ def _apply_paging(stmt, page: int | None, page_size: int | None):
 async def register(body: RegisterIn, db: AsyncSession = Depends(get_db)):
     """公开注册。"""
     user = await create_user(db, body.username, body.password, role="user")
-    return ok(await user_detail(db, user))
+    return ok(await user_detail(db, user), msg="register success")
 
 
 @router.post("/admin")
@@ -81,4 +81,4 @@ async def change_role(
     db.add(RoleChangeLog(operator_id=admin.id, target_id=user.id, old_role=user.role, new_role=body.role))
     user.role = body.role
     await db.commit()
-    return ok({"user_id": user_id, "role": body.role})
+    return ok({"user_id": str(user_id), "role": body.role}, msg="role updated")

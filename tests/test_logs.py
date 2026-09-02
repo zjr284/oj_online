@@ -46,7 +46,7 @@ async def test_log_visibility_and_audit(client):
     data = resp.json()["data"]
     assert "details" not in data
     assert data["score"] == 40
-    assert data["counts"] == {"AC": 4}
+    assert data["counts"] == 40   # api.md：本题总分数
 
     # 非本人查看未公开 → 403
     await login(client, "carol", "pw123456")
@@ -82,10 +82,10 @@ async def test_log_visibility_and_audit(client):
     assert logs, "应有访问审计记录"
     assert all(l["action"] == "view_logs" for l in logs)
     statuses = [l["status"] for l in logs]
-    assert 200 in statuses and 403 in statuses
+    assert "200" in statuses and "403" in statuses   # api.md 示例：status 为字符串
     assert all(l["problem_id"] == "sum_2" for l in logs)
 
     # 按用户筛选（carol 的 user_id = 3：一次 403 + 一次 200）
     resp = await client.get("/api/logs/access/", params={"user_id": 3})
     logs = resp.json()["data"]
-    assert logs and all(l["user_id"] == 3 for l in logs)
+    assert logs and all(l["user_id"] == "3" for l in logs)

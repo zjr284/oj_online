@@ -33,7 +33,7 @@ async def login(
     db.add(Session(token=token, user_id=user.id, expires_at=datetime.now() + timedelta(seconds=config.SESSION_TTL_SECONDS)))
     await db.commit()
     response.set_cookie(SESSION_COOKIE, token, httponly=True, max_age=config.SESSION_TTL_SECONDS, path="/")
-    return ok(user_public(user))
+    return ok(user_public(user), msg="login success")
 
 
 @router.post("/logout")
@@ -45,4 +45,4 @@ async def logout(request: Request, response: Response, db: AsyncSession = Depend
     await db.delete(session)
     await db.commit()
     response.delete_cookie(SESSION_COOKIE, path="/")
-    return ok(None)
+    return ok(None, msg="logout success")

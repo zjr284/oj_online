@@ -27,7 +27,7 @@ async def list_problems(user: User = Depends(get_current_user)):
 @router.post("/")
 async def create_problem(cfg: ProblemConfig, user: User = Depends(get_current_user)):
     await store.create(cfg)
-    return ok({"id": cfg.id})
+    return ok({"id": cfg.id}, msg="add success")
 
 
 @router.get("/{problem_id}")
@@ -40,13 +40,13 @@ async def update_problem(problem_id: str, cfg: ProblemConfig, user: User = Depen
     if cfg.id != problem_id:
         raise ApiError(400, "body id must match path id")
     await store.update(cfg)
-    return ok({"id": problem_id})
+    return ok({"id": problem_id}, msg="update success")
 
 
 @router.delete("/{problem_id}")
 async def delete_problem(problem_id: str, admin: User = Depends(require_admin)):
     await store.delete(problem_id)
-    return ok({"id": problem_id})
+    return ok({"id": problem_id}, msg="delete success")
 
 
 @router.put("/{problem_id}/log_visibility")
@@ -54,4 +54,5 @@ async def set_log_visibility(
     problem_id: str, body: LogVisibilityIn, admin: User = Depends(require_admin)
 ):
     await store.set_public_cases(problem_id, body.public_cases)
-    return ok({"problem_id": problem_id, "public_cases": body.public_cases})
+    return ok({"problem_id": problem_id, "public_cases": body.public_cases},
+              msg="log visibility updated")

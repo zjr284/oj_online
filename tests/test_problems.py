@@ -20,9 +20,10 @@ async def test_crud_and_permissions(client):
 
     await login(client, "admin", "admintestpassword")
 
-    # 创建
+    # 创建（api.md：msg = "add success"）
     resp = await client.post("/api/problems/", json=PROBLEM)
     assert resp.status_code == 200
+    assert resp.json()["msg"] == "add success"
     assert resp.json()["data"] == {"id": "sum_2"}
 
     # 重复创建 → 409
@@ -80,6 +81,23 @@ async def test_validation(client):
 
     # 测试点字段类型错误 → 400
     resp = await client.post("/api/problems/", json={**PROBLEM, "samples": "not-a-list"})
+    assert resp.status_code == 400
+
+    # 路径穿越 id → 400（安全：题目文件不得写出 data/problems/ 之外）
+    for evil_id in ("../../evil", "a/b", "..", "x.."):
+        resp = await client.post("/api/problems/", json={**PROBLEM, "id": evil_id})
+        assert resp.status_code == 400, f"id={evil_id} 应被拒绝"
+
+    # 必填字段为空串 / samples 为空 → 400
+    resp = await client.post("/api/problems/", json={**PROBLEM, "title": ""})
+    assert resp.status_code == 400
+    resp = await client.post("/api/problems/", json={**PROBLEM, "samples": []})
+    assert resp.status_code == 400
+
+    # 时间/内存限制非正 → 400
+    resp = await client.post("/api/problems/", json={**PROBLEM, "time_limit": 0})
+    assert resp.status_code == 400
+    resp = await client.post("/api/problems/", json={**PROBLEM, "memory_limit": -1})
     assert resp.status_code == 400
 
 
