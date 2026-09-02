@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# 虚拟环境
+.venv/
+venv/
+
+# 环境变量与密钥
+.env
+
+# 运行时数据（数据库文件不入库；data/problems/ 下的示例题目需入库）
+data/*.db
+data/problems/*.json.bak
+
+# 日志与临时文件
+*.log
+.DS_Store

@@ -1,7 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:dbg-course.github.io)"
+      "WebFetch(domain:dbg-course.github.io)",
+      "Bash(.venv/bin/pytest -q)",
+      "Bash(.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000)",
+      "Bash(curl -s -o /dev/null http://127.0.0.1:8000/api/auth/login)",
+      "Bash(curl -s http://127.0.0.1:8000/api/problems/)",
+      "Bash(curl -s -c /tmp/oj.jar -X POST http://127.0.0.1:8000/api/auth/login -H 'Content-Type: application/json' -d '{\"username\":\"admin\",\"password\":\"admintestpassword\"}')",
+      "Bash(curl -s -b /tmp/oj.jar http://127.0.0.1:8000/api/problems/)",
+      "Bash(curl -s -b /tmp/oj.jar http://127.0.0.1:8000/api/problems/sum_2)",
+      "Bash(curl -s -b /tmp/oj.jar http://127.0.0.1:8000/api/languages/)",
+      "Bash(curl -s http://127.0.0.1:8000/)",
+      "Bash(curl -s http://127.0.0.1:8000/api/users/)"
     ]
   }
 }
