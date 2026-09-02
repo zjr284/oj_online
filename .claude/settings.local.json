@@ -11,7 +11,16 @@
       "Bash(curl -s -b /tmp/oj.jar http://127.0.0.1:8000/api/problems/sum_2)",
       "Bash(curl -s -b /tmp/oj.jar http://127.0.0.1:8000/api/languages/)",
       "Bash(curl -s http://127.0.0.1:8000/)",
-      "Bash(curl -s http://127.0.0.1:8000/api/users/)"
+      "Bash(curl -s http://127.0.0.1:8000/api/users/)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(.venv/bin/pip list *)",
+      "Bash(.venv/bin/uvicorn app.main:app --port 8321)",
+      "Bash(curl -s http://127.0.0.1:8321/api/health)",
+      "Bash(curl -s http://127.0.0.1:8321/docs -o /dev/null -w \"%{http_code}\")",
+      "Bash(curl -s -X POST http://127.0.0.1:8321/api/users/ -H 'Content-Type: application/json' -d '{\"username\":\"smokeuser1\",\"password\":\"smokepw123\"}')",
+      "Bash(curl -s -c /tmp/oj_cookie.txt -X POST http://127.0.0.1:8321/api/auth/login -H 'Content-Type: application/json' -d '{\"username\":\"smokeuser1\",\"password\":\"smokepw123\"}')",
+      "Bash(curl -s -b /tmp/oj_cookie.txt -X POST http://127.0.0.1:8321/api/languages/ -H 'Content-Type: application/json' -d '{\"name\":\"python\",\"file_ext\":\"py\",\"run_cmd\":\"python3 {src}\"}')",
+      "Bash(curl -s -b /tmp/oj_cookie.txt -X POST http://127.0.0.1:8321/api/submissions/ -H 'Content-Type: application/json' -d '{\"problem_id\":\"sum_2\",\"language\":\"python\",\"code\":\"a, b = map\\(int, input\\(\\).split\\(\\)\\)\\\\nprint\\(a + b\\)\"}')"
     ]
   }
 }

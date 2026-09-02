@@ -42,6 +42,10 @@ body {
   background: #f59e0b; color: #fff; border-radius: 4px;
   padding: 1px 6px; font-size: 12px;
 }
+.badge.ok { background: #16a34a; }
+.badge.fail { background: #dc2626; }
+.badge.pending { background: #6b7280; }
+.badge + .badge { margin-left: 4px; }
 
 /* 表格 */
 .table { width: 100%; border-collapse: collapse; margin-top: 8px; }

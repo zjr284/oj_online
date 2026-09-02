@@ -60,8 +60,43 @@ Views.problemDetail = async (id) => {
       <div class="actions">
         ${currentUser ? `<a href="#/problems/${encodeURIComponent(p.id)}/edit" class="btn gray">编辑</a>` : ""}
         ${isAdmin() ? `<button id="del-btn" class="btn danger">删除</button>` : ""}
+        <a href="#/submissions?problem_id=${encodeURIComponent(p.id)}" class="btn gray">提交记录</a>
       </div>
-    </div>`;
+    </div>
+    <div class="card" id="submit-panel"></div>`;
+
+  // 提交面板（登录后可提交，Step 6）
+  const panel = document.getElementById("submit-panel");
+  if (!currentUser) {
+    panel.innerHTML = `<h2>提交代码</h2><p class="muted">请先<a href="#/login">登录</a>后提交。</p>`;
+  } else {
+    let languages = [];
+    try {
+      const resp = await api.get("/api/languages/");
+      languages = resp.name || [];
+    } catch (err) { /* 忽略，下方提示 */ }
+    panel.innerHTML = `
+      <h2>提交代码</h2>
+      <form id="submit-form">
+        <label>语言
+          <select name="language">${languages.map((l) => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join("")}</select>
+        </label>
+        <label>代码<textarea name="code" class="code" required placeholder="在此粘贴你的代码"></textarea></label>
+        <button type="submit" class="btn">提交评测</button>
+      </form>
+      ${languages.length === 0 ? '<p class="muted">暂无可用语言，请联系管理员注册。</p>' : ""}`;
+    document.getElementById("submit-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      try {
+        const resp = await api.post("/api/submissions/", {
+          problem_id: p.id, language: f.language.value, code: f.code.value,
+        });
+        toast("提交成功，等待评测…");
+        location.hash = `#/submissions/${resp.submission_id}`;
+      } catch (err) { toast(err.message, false); }
+    };
+  }
 
   if (isAdmin()) {
     document.getElementById("del-btn").onclick = async () => {

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_current_user, require_admin
 from app.core.errors import ApiError, ok
 from app.database import get_db
-from app.models import User
+from app.models import RoleChangeLog, User
 from app.schemas.user import RegisterIn, RoleIn
 from app.services.user_service import create_user, user_detail, user_public
 
@@ -37,8 +37,10 @@ async def register(body: RegisterIn, db: AsyncSession = Depends(get_db)):
 
 @router.post("/admin")
 async def create_admin(body: RegisterIn, db: AsyncSession = Depends(get_db), admin: User = Depends(require_admin)):
-    """管理员创建新的管理员账号。"""
+    """管理员创建新的管理员账号（记录操作日志）。"""
     user = await create_user(db, body.username, body.password, role="admin")
+    db.add(RoleChangeLog(operator_id=admin.id, target_id=user.id, old_role="-", new_role="admin"))
+    await db.commit()
     return ok(user_public(user))
 
 
@@ -75,6 +77,8 @@ async def change_role(
     user = await db.get(User, user_id)
     if user is None:
         raise ApiError(404, "user not found")
+    # 记录操作日志（Step 4：谁在何时修改了谁的权限）
+    db.add(RoleChangeLog(operator_id=admin.id, target_id=user.id, old_role=user.role, new_role=body.role))
     user.role = body.role
     await db.commit()
     return ok({"user_id": user_id, "role": body.role})

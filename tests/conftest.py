@@ -2,11 +2,15 @@
 
 注意：OJ_DATA_DIR 必须在导入 app 之前设置（config 在导入时读取）。
 """
+import asyncio
 import os
 import shutil
 import tempfile
 
+# 必须在导入 app 之前设置（config 在导入时读取环境变量）
 os.environ["OJ_DATA_DIR"] = tempfile.mkdtemp(prefix="oj-test-")
+# 测试期间放宽提交限流，避免用例间相互干扰（限流单独测试时用 monkeypatch 收紧）
+os.environ["OJ_SUBMIT_RATE_LIMIT"] = "1000"
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -34,3 +38,14 @@ async def login(client: AsyncClient, username: str, password: str) -> None:
     """登录并把会话 Cookie 存入 client（httpx 自动复用）。"""
     resp = await client.post("/api/auth/login", json={"username": username, "password": password})
     assert resp.status_code == 200, resp.text
+
+
+async def wait_status(client: AsyncClient, submission_id: str, timeout: float = 30) -> dict:
+    """轮询提交详情直到评测结束（status != pending）。"""
+    for _ in range(int(timeout * 10)):
+        resp = await client.get(f"/api/submissions/{submission_id}")
+        data = resp.json()["data"]
+        if data["status"] != "pending":
+            return data
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"submission {submission_id} still pending after {timeout}s")

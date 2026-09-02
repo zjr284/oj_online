@@ -29,5 +29,6 @@ ADMIN_PASSWORD = "admintestpassword"
 SESSION_TTL_SECONDS = 7 * 24 * 3600
 
 # 提交频率限制（api.md：1 分钟内提交超过 3 次 → 429）
-SUBMIT_RATE_LIMIT = 3
+# 测试时可通过环境变量 OJ_SUBMIT_RATE_LIMIT 调高
+SUBMIT_RATE_LIMIT = int(os.environ.get("OJ_SUBMIT_RATE_LIMIT", 3))
 SUBMIT_RATE_WINDOW = 60     # 秒

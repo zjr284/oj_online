@@ -5,16 +5,24 @@ const routes = [
   { pattern: /^#\/problems\/([^/]+)\/edit\/?$/, view: "problemEdit" },
   { pattern: /^#\/problems\/([^/]+)\/?$/, view: "problemDetail" },
   { pattern: /^#\/problems\/?$/, view: "problemList" },
+  { pattern: /^#\/submissions\/([^/]+)\/?$/, view: "submissionDetail" },
   { pattern: /^#\/submissions\/?$/, view: "submissionList" },
+  { pattern: /^#\/admin\/users\/?$/, view: "adminUsers" },
   { pattern: /^#\/login\/?$/, view: "login" },
   { pattern: /^#\/register\/?$/, view: "register" },
   { pattern: /^#\/user\/?$/, view: "userHome" },
 ];
 
+// 解析 hash 中的查询参数（如 #/submissions?problem_id=xxx）
+function hashParams() {
+  const q = (location.hash || "").split("?")[1] || "";
+  return new URLSearchParams(q);
+}
+
 async function render() {
-  const hash = location.hash || "#/problems";
+  const path = (location.hash || "#/problems").split("?")[0];
   for (const r of routes) {
-    const m = hash.match(r.pattern);
+    const m = path.match(r.pattern);
     if (m) return Views[r.view](...m.slice(1));
   }
   Views.notFound();

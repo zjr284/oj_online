@@ -30,3 +30,16 @@ class Session(Base):
     token: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class RoleChangeLog(Base):
+    """权限变更操作日志（Step 4：谁在何时修改了谁的权限）。"""
+
+    __tablename__ = "role_change_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    operator_id: Mapped[int] = mapped_column(Integer, index=True)
+    target_id: Mapped[int] = mapped_column(Integer, index=True)
+    old_role: Mapped[str] = mapped_column(String(16))
+    new_role: Mapped[str] = mapped_column(String(16))
+    time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

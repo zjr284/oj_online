@@ -1,22 +1,33 @@
 """安全工具：密码哈希与令牌生成。
 
-密码使用标准库 PBKDF2-SHA256（零额外依赖），存储格式：
-pbkdf2$<迭代次数>$<盐hex>$<摘要hex>
+密码使用 bcrypt 哈希（Step 4 要求），存储格式为标准 bcrypt 串（$2b$...）。
+兼容旧版 PBKDF2 格式（pbkdf2$...），用于已存在的数据，新密码一律 bcrypt。
 """
 import hashlib
 import hmac
 import secrets
 
-PBKDF2_ITERATIONS = 600_000  # OWASP 对 PBKDF2-SHA256 的推荐值
+import bcrypt
+
+# bcrypt 输入上限 72 字节，超长密码截断（不影响本课程场景）
+_BCRYPT_MAX_BYTES = 72
 
 
 def hash_password(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, PBKDF2_ITERATIONS)
-    return f"pbkdf2${PBKDF2_ITERATIONS}${salt.hex()}${digest.hex()}"
+    return bcrypt.hashpw(password.encode()[:_BCRYPT_MAX_BYTES], bcrypt.gensalt()).decode()
 
 
 def verify_password(password: str, stored: str) -> bool:
+    if stored.startswith("$2"):   # bcrypt 格式
+        try:
+            return bcrypt.checkpw(password.encode()[:_BCRYPT_MAX_BYTES], stored.encode())
+        except ValueError:
+            return False
+    return _verify_legacy_pbkdf2(password, stored)
+
+
+def _verify_legacy_pbkdf2(password: str, stored: str) -> bool:
+    """旧版 PBKDF2-SHA256 格式（保留兼容，新数据不再使用）。"""
     try:
         _, iterations, salt_hex, digest_hex = stored.split("$")
         digest = hashlib.pbkdf2_hmac(

@@ -3,15 +3,14 @@
 语言以数据库记录注册（languages 表），评测时动态读取——
 这正是「动态注册语言」的评分依据。判题执行部分见 app/judge/。
 
-权限说明：api.md 在 POST /api/languages/ 上列出了 401/403，
-结合「普通用户只能访问自己的提交/日志，管理员管理一切」的约定，
-这里将注册语言限定为管理员操作。
+权限说明（Step 2 任务 3 / Step 4 权限回溯）：注册语言可由任意
+「已登录用户」执行；未登录 401，被封禁 403。
 """
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import require_admin
+from app.core.deps import get_current_user
 from app.core.errors import ApiError, ok
 from app.database import get_db
 from app.models import Language, User
@@ -39,7 +38,7 @@ async def list_languages(db: AsyncSession = Depends(get_db)):
 
 @router.post("/")
 async def register_language(
-    body: LanguageIn, db: AsyncSession = Depends(get_db), admin: User = Depends(require_admin)
+    body: LanguageIn, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)
 ):
     _validate_cmd(body)
     if await db.get(Language, body.name) is not None:
