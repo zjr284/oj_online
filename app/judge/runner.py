@@ -171,7 +171,10 @@ class JudgeRunner:
         self.memory_limit = int(
             language.get("memory_limit") or problem.get("memory_limit") or config.DEFAULT_MEMORY_LIMIT
         )
-        self._src = workdir / f"main{language['file_ext']}"
+        ext = language["file_ext"]
+        if ext and not ext.startswith("."):   # g++ 等编译器按扩展名识别文件类型，必须带点
+            ext = "." + ext
+        self._src = workdir / f"main{ext}"
         self._exe = workdir / "main"
 
     # ---- 命令模板展开与脱敏 ----

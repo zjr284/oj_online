@@ -49,7 +49,10 @@
       "Bash(.venv/bin/python -)",
       "Bash(.venv/bin/pytest -q tests/test_ai.py::test_events_sse tests/test_ai.py::test_cancel_sse_notifies)",
       "Bash(.venv/bin/pytest -q tests/test_ai.py::test_cancel_sse_notifies)",
-      "Bash(.venv/bin/pytest -q tests/test_ai.py::test_cancel_sse_notifies tests/test_ai.py::test_events_sse)"
+      "Bash(.venv/bin/pytest -q tests/test_ai.py::test_cancel_sse_notifies tests/test_ai.py::test_events_sse)",
+      "Bash(g++ --version)",
+      "Bash(sqlite3 /home/kkk/code/oj_online/data/oj.db \"SELECT name, file_ext, compile_cmd, run_cmd FROM languages;\")",
+      "Bash(.venv/bin/pytest -q tests/test_submissions.py)"
     ]
   }
 }

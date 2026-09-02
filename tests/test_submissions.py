@@ -23,6 +23,14 @@ AC_CODE = "a, b = map(int, input().split())\nprint(a + b)\n"
 WA_CODE = "print(1)\n"
 TLE_CODE = "while True:\n    pass\n"
 MLE_CODE = "data = []\nwhile True:\n    data.append(bytearray(1024 * 1024))\n"
+CPP_AC_CODE = """#include <iostream>
+int main() {
+    int a, b;
+    std::cin >> a >> b;
+    std::cout << a + b << "\\n";
+    return 0;
+}
+"""
 
 
 async def _setup(client):
@@ -132,6 +140,22 @@ async def test_ce(client):
     assert data["status"] == "error"
     assert data["counts"] == {"CE": 1}
     assert data["compile_info"]
+
+
+async def test_cpp_compile_and_ac(client):
+    """C++ 编译回归：源码文件必须带 .cpp 扩展名，否则 g++ 按链接器输入处理 → 全部 CE。
+    file_ext 故意不带点（与真实数据库一致），验证判题器自动补全扩展名。"""
+    await _setup(client)
+    resp = await client.post("/api/languages/", json={
+        "name": "cpp", "file_ext": "cpp",
+        "compile_cmd": "g++ -O2 -std=c++17 {src} -o {exe}", "run_cmd": "{exe}",
+    })
+    assert resp.status_code == 200
+    sid = await _submit(client, CPP_AC_CODE, language="cpp")
+    data = await wait_status(client, sid, timeout=20)
+    assert data["status"] == "success"
+    assert data["score"] == 40
+    assert data["counts"] == {"AC": 4}
 
 
 async def test_permissions_and_rejudge(client):
