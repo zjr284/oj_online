@@ -250,3 +250,126 @@ async def test_language_validation(client):
     resp = await client.post("/api/languages/", json=base)
     assert resp.status_code == 200
     assert resp.json()["msg"] == "language registered"
+
+
+# ---------- Step 2 评测引擎鲁棒性 ----------
+
+async def test_output_tolerance(client):
+    """Step 2 输出比对：忽略行末空格与最后一行多余换行。"""
+    await _setup(client)
+    # 每行行尾多余空格 + 末尾多个空行 → AC
+    code = ("a, b = map(int, input().split())\n"
+            "print(a + b, end='   ')\n"
+            "print('   ')\nprint()\n")
+    data = await wait_status(client, await _submit(client, code))
+    assert data["verdicts"] == {"AC": 4}
+
+    # Windows 风格 \\r\\n 换行 → AC
+    code = "a, b = map(int, input().split())\nprint(a + b, end='\\r\\n')\n"
+    data = await wait_status(client, await _submit(client, code))
+    assert data["verdicts"] == {"AC": 4}
+
+
+async def test_mixed_verdicts_score(client):
+    """部分通过：按测试点计分（每点 10 分），verdicts 汇总各结果。"""
+    await _setup(client)
+    code = "a, b = map(int, input().split())\nprint(a + b if a == 1 else 999)\n"
+    data = await wait_status(client, await _submit(client, code))
+    assert data["status"] == "error"
+    assert data["verdicts"] == {"AC": 1, "WA": 3}
+    assert data["score"] == 10
+    assert data["counts"] == 40           # 总分数不因 WA 改变
+
+
+async def test_wall_clock_tle(client):
+    """sleep 类程序不消耗 CPU：墙钟超时兜底 → TLE。"""
+    await _setup(client)
+    code = "import time\ntime.sleep(5)\nprint(3)\n"
+    data = await wait_status(client, await _submit(client, code), timeout=30)
+    assert data["status"] == "error"
+    assert data["verdicts"] == {"TLE": 4}
+    assert data["counts"] == 40
+
+
+async def test_runtime_error_re(client):
+    """非零退出 → RE，run_info 标记评测正常结束。"""
+    await _setup(client)
+    code = "raise RuntimeError('boom')\n"
+    data = await wait_status(client, await _submit(client, code))
+    assert data["status"] == "error"
+    assert data["verdicts"] == {"RE": 4}
+    assert data["score"] == 0
+    assert data["run_info"]["result"] == "finished"
+
+
+async def test_unknown_error_unk(client):
+    """run_cmd 指向不存在的可执行文件 → UNK（不抛 500）。"""
+    await _setup(client)
+    await client.post("/api/languages/", json={
+        "name": "ghost", "file_ext": ".py", "run_cmd": "no-such-binary-xyz {src}"})
+    data = await wait_status(client, await _submit(client, "print(3)\n", language="ghost"))
+    assert data["status"] == "error"
+    assert data["verdicts"] == {"UNK": 4}
+    assert data["run_info"]["result"] == "finished"
+
+
+async def test_missing_compiler_ce(client):
+    """编译命令指向不存在的编译器 → CE（而非 500/UNK）。"""
+    await _setup(client)
+    await client.post("/api/languages/", json={
+        "name": "phantomc", "file_ext": ".cpp",
+        "compile_cmd": "no-such-compiler-xyz {src} -o {exe}", "run_cmd": "{exe}"})
+    data = await wait_status(client, await _submit(client, "int main(){}", language="phantomc"))
+    assert data["status"] == "error"
+    assert data["verdicts"] == {"CE": 1}
+    assert data["compile_info"]["result"] == "failed"
+    assert data["compile_info"]["message"]
+
+
+async def test_dynamic_language_registration_affects_judge(client):
+    """注册的别名语言立即参与评测（Step 2 动态注册评分点）。"""
+    await _setup(client)
+    resp = await client.post("/api/languages/", json={
+        "name": "py2", "file_ext": ".py", "run_cmd": "python3 {src}"})
+    assert resp.status_code == 200
+    data = await wait_status(client, await _submit(client, AC_CODE, language="py2"))
+    assert data["status"] == "success"
+    assert data["verdicts"] == {"AC": 4}
+    assert data["score"] == 40
+
+
+async def test_language_limits_override_problem(client):
+    """语言注册的 time_limit 优先于题目配置（Step 2：题目未设置时按语言配置）。"""
+    await login(client, "admin", "admintestpassword")
+    await client.post("/api/problems/", json={
+        **{k: v for k, v in PROBLEM.items() if k not in ("id", "testcases")},
+        "id": "slow", "time_limit": 5,
+        "testcases": [{"id": "1", "input": "1 2", "output": "3"}],
+    })
+    await client.post("/api/languages/", json={"name": "python", "file_ext": "py", "run_cmd": "python3 {src}"})
+    await client.post("/api/languages/", json={
+        "name": "turtle", "file_ext": ".py", "run_cmd": "python3 {src}",
+        "time_limit": 1, "memory_limit": 64,
+    })
+
+    # 题目限制 5s 下 sleep(3) 本可通过；语言限制 1s → TLE
+    code = "import time\ntime.sleep(3)\nprint(3)\n"
+    data = await wait_status(client, await _submit(client, code, problem_id="slow", language="turtle"),
+                             timeout=30)
+    assert data["status"] == "error"
+    assert data["verdicts"] == {"TLE": 1}
+
+    # 用默认语言（无语言限制）提交同样代码：走题目 5s 限制 → AC
+    data = await wait_status(client, await _submit(client, code, problem_id="slow", language="python"),
+                             timeout=30)
+    assert data["status"] == "success"
+    assert data["verdicts"] == {"AC": 1}
+
+
+async def test_empty_code_rejected(client):
+    """空代码 → 400（code 必填非空）。"""
+    await _setup(client)
+    resp = await client.post("/api/submissions/",
+                             json={"problem_id": "sum_2", "language": "python", "code": ""})
+    assert resp.status_code == 400
+    assert resp.json()["data"] is None

@@ -7,7 +7,8 @@
 「已登录用户」执行；未登录 401，被封禁 403。
 """
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user
@@ -31,8 +32,12 @@ def _validate_cmd(lang: LanguageIn) -> None:
 
 @router.get("/")
 async def list_languages(db: AsyncSession = Depends(get_db)):
-    """公开接口：返回 {name: [语言列表]}。"""
-    names = (await db.scalars(select(Language.name).order_by(Language.name))).all()
+    """公开接口：返回 {name: [语言列表]}。
+
+    按注册（插入）顺序返回，与 api.md 示例 ["python", "cpp"] 一致。
+    语言无删除接口，SQLite 的 rowid 单调递增，即注册顺序。
+    """
+    names = (await db.scalars(select(Language.name).order_by(text("rowid")))).all()
     return ok({"name": list(names)})
 
 
@@ -44,5 +49,10 @@ async def register_language(
     if await db.get(Language, body.name) is not None:
         raise ApiError(400, "language already exists")
     db.add(Language(**body.model_dump()))
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # 并发注册同一名称：唯一约束兜底 → 400（而非 500）
+        await db.rollback()
+        raise ApiError(400, "language already exists")
     return ok({"name": body.name}, msg="language registered")
