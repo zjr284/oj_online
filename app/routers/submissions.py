@@ -105,6 +105,10 @@ async def list_submissions(
     if page is not None and page_size is None:
         raise ApiError(400, "page_size is required when page is provided")
 
+    # api.md：user_id/problem_id 为一级条件，不可以全部为空
+    if user_id is None and problem_id is None:
+        raise ApiError(400, "at least one of user_id or problem_id is required")
+
     # 权限：普通用户只能查自己的记录
     if user.role != "admin":
         if user_id is not None and user_id != user.id:

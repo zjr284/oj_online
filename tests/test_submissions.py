@@ -1,4 +1,9 @@
 """Step 3 评测管理接口测试（真实执行 python3 判题）。"""
+import asyncio
+
+from app.database import SessionLocal
+from app.models import Submission
+from app.services import judge_service
 from conftest import login, wait_status
 
 PROBLEM = {
@@ -183,11 +188,11 @@ async def test_permissions_and_rejudge(client):
     # alice 提交，列表只能看到自己的；指定别人的 user_id → 403
     sid2 = await _submit(client, AC_CODE)
     await wait_status(client, sid2)
-    resp = await client.get("/api/submissions/")
+    resp = await client.get("/api/submissions/", params={"problem_id": "sum_2"})
     data = resp.json()["data"]
     assert data["total"] == 1
     assert data["submissions"][0]["submission_id"] == str(sid2)
-    resp = await client.get("/api/submissions/", params={"user_id": 1})
+    resp = await client.get("/api/submissions/", params={"user_id": 1, "problem_id": "sum_2"})
     assert resp.status_code == 403
 
     # admin rejudge：覆盖为 pending → 重新评测 → success
@@ -373,3 +378,272 @@ async def test_empty_code_rejected(client):
                              json={"problem_id": "sum_2", "language": "python", "code": ""})
     assert resp.status_code == 400
     assert resp.json()["data"] is None
+
+
+# ---------- Step 3 评测管理鲁棒性 ----------
+
+async def test_submit_response_exact(client):
+    """POST 成功响应与 api.md 示例一致（submission_id 为字符串）。"""
+    await _setup(client)
+    resp = await client.post("/api/submissions/",
+                             json={"problem_id": "sum_2", "language": "python", "code": AC_CODE})
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["code"] == 200 and body["msg"] == "success"
+    assert body["data"]["status"] == "pending"
+    assert isinstance(body["data"]["submission_id"], str)
+    await wait_status(client, body["data"]["submission_id"])
+
+
+async def test_list_requires_primary_condition(client):
+    """api.md：user_id/problem_id 一级条件不可全空 → 400（401 仍最优先）。"""
+    # 未登录：401 优先于 400
+    resp = await client.get("/api/submissions/")
+    assert resp.status_code == 401
+
+    await _setup(client)
+    resp = await client.get("/api/submissions/")
+    assert resp.status_code == 400
+    assert resp.json()["data"] is None
+    # 只给二级条件 status 也不行
+    resp = await client.get("/api/submissions/", params={"status": "success"})
+    assert resp.status_code == 400
+
+    # 普通用户同样受限
+    await client.post("/api/users/", json={"username": "alice", "password": "pw123456"})
+    await login(client, "alice", "pw123456")
+    resp = await client.get("/api/submissions/")
+    assert resp.status_code == 400
+
+
+async def test_list_pagination_semantics(client):
+    await _setup(client)
+    for _ in range(3):
+        await wait_status(client, await _submit(client, AC_CODE))
+
+    # 全空 → 全部数据
+    resp = await client.get("/api/submissions/", params={"problem_id": "sum_2"})
+    assert resp.json()["data"]["total"] == 3
+    assert len(resp.json()["data"]["submissions"]) == 3
+
+    # page 空 page_size 非空 → 第一页
+    resp = await client.get("/api/submissions/", params={"problem_id": "sum_2", "page_size": 2})
+    assert resp.json()["data"]["total"] == 3
+    assert len(resp.json()["data"]["submissions"]) == 2
+
+    # page + page_size → 第二页
+    resp = await client.get("/api/submissions/",
+                            params={"problem_id": "sum_2", "page": 2, "page_size": 2})
+    assert len(resp.json()["data"]["submissions"]) == 1
+
+    # page 非空 page_size 空 → 400
+    resp = await client.get("/api/submissions/", params={"problem_id": "sum_2", "page": 1})
+    assert resp.status_code == 400
+
+    # 非法分页参数 → 400
+    for bad in ({"problem_id": "sum_2", "page": 0, "page_size": 1},
+                {"problem_id": "sum_2", "page": "x", "page_size": 1},
+                {"problem_id": "sum_2", "page": 1, "page_size": 0},
+                {"problem_id": "sum_2", "page": 1, "page_size": "x"}):
+        resp = await client.get("/api/submissions/", params=bad)
+        assert resp.status_code == 400, bad
+
+    # 超出范围的页 → 空列表，total 不变
+    resp = await client.get("/api/submissions/",
+                            params={"problem_id": "sum_2", "page": 9, "page_size": 2})
+    assert resp.json()["data"] == {"total": 3, "submissions": []}
+
+
+async def test_list_filters_and_order(client):
+    """组合筛选；新提交在前；未知筛选值返回空而非报错。"""
+    await _setup(client)
+    sid_ok = await _submit(client, AC_CODE)
+    await wait_status(client, sid_ok)
+    sid_bad = await _submit(client, WA_CODE)
+    await wait_status(client, sid_bad)
+
+    # status 二级条件组合筛选
+    resp = await client.get("/api/submissions/",
+                            params={"problem_id": "sum_2", "status": "success"})
+    data = resp.json()["data"]
+    assert data["total"] == 1
+    assert data["submissions"][0]["submission_id"] == str(sid_ok)
+
+    # 不存在的题目 → 空列表（筛选语义，不报 404）
+    resp = await client.get("/api/submissions/", params={"problem_id": "nope"})
+    assert resp.json()["data"] == {"total": 0, "submissions": []}
+
+    # 未知 status 值 → 空列表
+    resp = await client.get("/api/submissions/",
+                            params={"problem_id": "sum_2", "status": "bogus"})
+    assert resp.status_code == 200
+    assert resp.json()["data"]["total"] == 0
+
+    # 按 id 倒序：新提交在前
+    resp = await client.get("/api/submissions/", params={"problem_id": "sum_2"})
+    ids = [s["submission_id"] for s in resp.json()["data"]["submissions"]]
+    assert ids == [str(sid_bad), str(sid_ok)]
+
+
+async def test_list_item_shapes(client):
+    """error/pending 条目只返回 {submission_id, status}；success 含摘要字段。"""
+    await _setup(client)
+    sid_ok = await _submit(client, AC_CODE)
+    await wait_status(client, sid_ok)
+    sid_bad = await _submit(client, WA_CODE)
+    await wait_status(client, sid_bad)
+
+    # 直接插入 pending 记录（不调度评测），确定性地观察 pending 条目形状
+    async with SessionLocal() as db:
+        sub = Submission(user_id=1, problem_id="sum_2", language="python",
+                         code=AC_CODE, status="pending")
+        db.add(sub)
+        await db.commit()
+        sid_pending = sub.id
+
+    resp = await client.get("/api/submissions/", params={"problem_id": "sum_2"})
+    items = {s["submission_id"]: s for s in resp.json()["data"]["submissions"]}
+    assert set(items[str(sid_pending)].keys()) == {"submission_id", "status"}
+    assert items[str(sid_pending)]["status"] == "pending"
+    assert set(items[str(sid_bad)].keys()) == {"submission_id", "status"}
+
+    ok_item = items[str(sid_ok)]
+    assert ok_item["status"] == "success"
+    assert ok_item["score"] == 40 and ok_item["counts"] == 40
+
+
+async def test_detail_pending_fields_null(client):
+    """pending 详情：尚未产生的字段返回 null。"""
+    await _setup(client)
+    async with SessionLocal() as db:
+        sub = Submission(user_id=1, problem_id="sum_2", language="python",
+                         code=AC_CODE, status="pending")
+        db.add(sub)
+        await db.commit()
+        sid = sub.id
+
+    resp = await client.get(f"/api/submissions/{sid}")
+    data = resp.json()["data"]
+    assert data["status"] == "pending"
+    assert data["submission_id"] == str(sid)
+    assert data["score"] is None and data["counts"] is None
+    assert data["compile_info"] is None and data["run_info"] is None and data["error_info"] is None
+    assert data["submit_time"]
+
+
+async def test_detail_success_shape(client):
+    """评测完成后的详情：字段齐全，解释型语言 compile_info 为 null。"""
+    await _setup(client)
+    sid = await _submit(client, AC_CODE)
+    await wait_status(client, sid)
+
+    d = (await client.get(f"/api/submissions/{sid}")).json()["data"]
+    assert set(d) == {"submission_id", "user_id", "problem_id", "language", "status",
+                      "score", "counts", "verdicts", "compile_info", "run_info",
+                      "error_info", "code", "submit_time"}
+    assert d["status"] == "success" and d["score"] == 40 and d["counts"] == 40
+    assert d["compile_info"] is None   # 解释型语言无编译信息
+    assert d["run_info"]["result"] == "finished"
+    assert d["error_info"] is None
+    assert d["code"] == AC_CODE
+
+
+async def test_submission_id_path_validation(client):
+    """非数字 submission_id → 400（参数校验，非 500）。"""
+    await login(client, "admin", "admintestpassword")
+    for bad in ("abc", "1.5", "1e3"):
+        resp = await client.get(f"/api/submissions/{bad}")
+        assert resp.status_code == 400, bad
+        assert resp.json()["data"] is None
+
+
+async def test_rejudge_overwrites_original(client):
+    """重判：响应与 api.md 一致；覆盖原记录，测试点明细被替换而非累积。"""
+    await _setup(client)
+    sid = await _submit(client, AC_CODE)
+    await wait_status(client, sid)
+
+    resp = await client.put(f"/api/submissions/{sid}/rejudge")
+    assert resp.status_code == 200
+    assert resp.json() == {"code": 200, "msg": "rejudge started",
+                           "data": {"submission_id": str(sid), "status": "pending"}}
+
+    data = await wait_status(client, sid, timeout=60)
+    assert data["status"] == "success"
+    assert data["verdicts"] == {"AC": 4}
+
+    # 明细覆盖而非累积：仍是 4 条（若累积会是 8 条）
+    log = (await client.get(f"/api/submissions/{sid}/log")).json()["data"]
+    assert len(log["details"]) == 4
+
+
+async def test_rejudge_rapid_generation(client):
+    """连续两次重判：代际机制丢弃旧任务结果，最终数据一致。"""
+    await _setup(client)
+    sid = await _submit(client, AC_CODE)
+    await wait_status(client, sid)
+
+    r1 = await client.put(f"/api/submissions/{sid}/rejudge")
+    r2 = await client.put(f"/api/submissions/{sid}/rejudge")
+    assert r1.status_code == 200 and r2.status_code == 200
+
+    data = await wait_status(client, sid, timeout=60)
+    assert data["status"] == "success"
+    assert data["verdicts"] == {"AC": 4}
+    log = (await client.get(f"/api/submissions/{sid}/log")).json()["data"]
+    assert len(log["details"]) == 4
+
+
+async def test_rate_limit_per_user_and_window(client, monkeypatch):
+    """限流按用户独立计数；429 优先于 404；滑动窗口过期后恢复。"""
+    from app.core.rate_limit import RateLimiter
+    import app.routers.submissions as sub_router
+
+    monkeypatch.setattr(sub_router, "submit_limiter", RateLimiter(2, 0.6))
+
+    await _setup(client)
+    await client.post("/api/users/", json={"username": "alice", "password": "pw123456"})
+
+    # admin 连续提交 2 次（不等待评测，仅统计请求）
+    s1 = await _submit(client, AC_CODE)
+    s2 = await _submit(client, AC_CODE)
+
+    # 第 3 次 → 429（统一格式）
+    resp = await client.post("/api/submissions/",
+                             json={"problem_id": "sum_2", "language": "python", "code": AC_CODE})
+    assert resp.status_code == 429
+    assert resp.json()["code"] == 429 and resp.json()["data"] is None
+
+    # 超限后即使题目不存在也是 429（异常序 429 > 404）
+    resp = await client.post("/api/submissions/",
+                             json={"problem_id": "nope", "language": "python", "code": AC_CODE})
+    assert resp.status_code == 429
+
+    # 其他用户不受影响（按用户计数）
+    await login(client, "alice", "pw123456")
+    s3 = await _submit(client, AC_CODE)
+
+    # 窗口滑过后 admin 恢复
+    await login(client, "admin", "admintestpassword")
+    await asyncio.sleep(0.7)
+    s4 = await _submit(client, AC_CODE)
+
+    # 等所有后台评测完成，避免跨用例污染
+    for sid in (s1, s2, s3, s4):
+        await wait_status(client, sid, timeout=60)
+
+
+async def test_requeue_pending_recovery(client):
+    """重启恢复：遗留 pending 提交在启动时（requeue_pending）被重新评测。"""
+    await _setup(client)
+    async with SessionLocal() as db:
+        sub = Submission(user_id=1, problem_id="sum_2", language="python",
+                         code=AC_CODE, status="pending")
+        db.add(sub)
+        await db.commit()
+        sid = sub.id
+
+    await judge_service.requeue_pending()
+    data = await wait_status(client, sid, timeout=30)
+    assert data["status"] == "success"
+    assert data["verdicts"] == {"AC": 4}

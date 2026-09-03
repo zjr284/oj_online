@@ -16,6 +16,29 @@ Views.submissionList = async () => {
   if (params.get("problem_id")) query.problem_id = params.get("problem_id");
   if (params.get("status")) query.status = params.get("status");
   if (currentUser && !isAdmin()) query.user_id = currentUser.user_id;
+  else if (isAdmin() && params.get("user_id")) query.user_id = params.get("user_id");
+
+  // api.md：user_id/problem_id 一级条件不可全空；管理员未指定时先展示筛选表单
+  if (!query.problem_id && !query.user_id) {
+    app.innerHTML = `
+      <div class="page-head"><div><h1>评测记录</h1>
+        <p class="sub">管理员查看评测记录需指定筛选条件（题目 ID 或用户 ID）。</p></div></div>
+      <div class="card"><form id="sub-filter" class="row" style="gap:8px">
+        <input name="problem_id" placeholder="题目 ID，如 sum_2" />
+        <input name="user_id" placeholder="用户 ID，如 1" />
+        <button class="btn" type="submit">查询</button>
+      </form></div>`;
+    document.getElementById("sub-filter").onsubmit = (e) => {
+      e.preventDefault();
+      const f = e.target.elements;
+      const qs = new URLSearchParams();
+      if (f.problem_id.value.trim()) qs.set("problem_id", f.problem_id.value.trim());
+      if (f.user_id.value.trim()) qs.set("user_id", f.user_id.value.trim());
+      location.hash = `#/submissions${qs.size ? "?" + qs.toString() : ""}`;
+    };
+    return;
+  }
+
   const qs = new URLSearchParams(query).toString();
 
   let data;
@@ -28,10 +51,11 @@ Views.submissionList = async () => {
     return;
   }
 
-  // 筛选链接：保留当前 problem_id 筛选条件
+  // 筛选链接：保留当前 problem_id / user_id 筛选条件
   const filterHref = (status) => {
     const qs = new URLSearchParams();
     if (params.get("problem_id")) qs.set("problem_id", params.get("problem_id"));
+    if (params.get("user_id")) qs.set("user_id", params.get("user_id"));
     if (status) qs.set("status", status);
     const s = qs.toString();
     return `#/submissions${s ? "?" + s : ""}`;

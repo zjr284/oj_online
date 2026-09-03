@@ -543,6 +543,10 @@ def _submission_list():
             st.error("用户 ID 必须是数字。")
             return
         params["user_id"] = int(user_id.strip())
+    # api.md：user_id/problem_id 一级条件不可全空
+    if not params.get("problem_id") and not params.get("user_id"):
+        st.info("管理员查询评测记录需指定筛选条件：请填写题目 ID 或用户 ID。")
+        return
     try:
         data = api("GET", "/api/submissions/", params=params or None)
     except ApiError as e:
