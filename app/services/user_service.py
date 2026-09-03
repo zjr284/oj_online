@@ -1,5 +1,6 @@
 """用户服务：注册、初始管理员、用户统计等业务逻辑（Step 4）。"""
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import config
@@ -37,7 +38,12 @@ async def create_user(db: AsyncSession, username: str, password: str, role: str 
         raise ApiError(400, "username already exists")
     user = User(username=username, password_hash=hash_password(password), role=role)
     db.add(user)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # 并发注册同一用户名：唯一约束兜底 → 400（而非 500）
+        await db.rollback()
+        raise ApiError(400, "username already exists")
     await db.refresh(user)
     return user
 

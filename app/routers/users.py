@@ -3,7 +3,7 @@
 分页语义（api.md）：page 与 page_size 全空 = 查全部；
 page 空 page_size 非空 = 第一页；page 非空 page_size 空 = 参数错误。
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,8 +46,8 @@ async def create_admin(body: RegisterIn, db: AsyncSession = Depends(get_db), adm
 
 @router.get("/")
 async def list_users(
-    page: int | None = None,
-    page_size: int | None = None,
+    page: int | None = Query(None, ge=1),
+    page_size: int | None = Query(None, ge=1),
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
