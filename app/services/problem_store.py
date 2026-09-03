@@ -48,10 +48,12 @@ class ProblemStore:
             path = self._path(problem_id)
             if not path.is_file():
                 raise ApiError(404, "problem not found")
-            raw = json.loads(path.read_text(encoding="utf-8"))
             try:
-                return ProblemConfig.model_validate(raw).model_dump()
-            except ValidationError:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                # exclude_none：未提供编号的测试点不带 "id": null，与 api.md 示例一致
+                return ProblemConfig.model_validate(raw).model_dump(exclude_none=True)
+            except (json.JSONDecodeError, ValidationError):
+                # 损坏的配置文件：视为服务器数据异常（500），不向客户端泄露内部细节
                 raise ApiError(500, f"problem config corrupted: {problem_id}")
 
         return await asyncio.to_thread(_read)
@@ -60,9 +62,12 @@ class ProblemStore:
         def _write() -> None:
             self.base_dir.mkdir(parents=True, exist_ok=True)
             path = self._path(cfg.id)
-            if path.is_file():
+            try:
+                # "x" 独占创建：并发提交同一 id 时恰好一个成功，其余稳定返回 409
+                with open(path, "x", encoding="utf-8") as f:
+                    f.write(self._dumps(cfg))
+            except FileExistsError:
                 raise ApiError(409, "problem already exists")
-            path.write_text(self._dumps(cfg), encoding="utf-8")
 
         await asyncio.to_thread(_write)
 
@@ -92,7 +97,7 @@ class ProblemStore:
 
     @staticmethod
     def _dumps(cfg: ProblemConfig) -> str:
-        return json.dumps(cfg.model_dump(), ensure_ascii=False, indent=2)
+        return json.dumps(cfg.model_dump(exclude_none=True), ensure_ascii=False, indent=2)
 
 
 # 全局单例：路由层直接使用
