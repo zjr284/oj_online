@@ -5,7 +5,7 @@
 要求（step6.md）：
 - 任务 1 用户页面组：注册/登录/退出、用户信息展示、用户管理（仅管理员）
 - 任务 2 题目页面组：列表/详情/新增/编辑/删除，表单提交前做格式检查
-- 任务 3 评测与提交页面组：代码提交、提交记录列表/详情、轮询评测状态、明确展示 CE/RE/TLE 等
+- 任务 3 评测与提交页面组：题目详情内嵌代码提交（力扣式双栏）、提交记录列表/详情、轮询评测状态、明确展示 CE/RE/TLE 等
 - 任务 4 接口对接：统一 API 封装、身份存 session_state（会话 Cookie 经 httpx 传递）、
   不硬编码用户身份、按响应 code/msg 展示成败、不绕过后端直接读写数据
 """
@@ -44,7 +44,7 @@ class ApiError(Exception):
 def _clear_session():
     """清除本地登录态与页面状态（登出/会话过期时）。"""
     for key in ("me", "cookies", "nav", "prob_view", "prob_id",
-                "sub_view", "sub_id", "confirm_delete", "submit_problem",
+                "sub_view", "sub_id", "confirm_delete",
                 "ai_view", "ai_task_id", "audit_user", "audit_problem", "audit_page"):
         st.session_state.pop(key, None)
 
@@ -249,7 +249,7 @@ def render_sidebar() -> str:
         if me:
             st.markdown(f"**{me.get('username')}**　{'🔑 管理员' if me.get('role') == 'admin' else '👤 用户'}")
             st.divider()
-            pages = ["📋 题目", "🚀 提交评测", "📜 评测记录", "🙍 个人主页", "✨ AI 命题"]
+            pages = ["📋 题目", "📜 评测记录", "🙍 个人主页", "✨ AI 命题"]
             if me.get("role") == "admin":
                 pages += ["🛠 用户管理", "🛡 访问审计"]
             nav = st.session_state.get("nav")
@@ -539,41 +539,42 @@ def _problem_detail():
     if p.get("tags"):
         st.markdown(" ".join(_badge(t, "blue") for t in p["tags"]), unsafe_allow_html=True)
 
-    tab_desc, tab_samples, tab_more = st.tabs(["题目描述", "样例", "数据范围 / 提示"])
-    with tab_desc:
-        st.markdown(p["description"] or "—")
-        st.markdown("#### 输入格式")
-        st.markdown(p["input_description"] or "—")
-        st.markdown("#### 输出格式")
-        st.markdown(p["output_description"] or "—")
-    with tab_samples:
-        for i, s in enumerate(p.get("samples") or []):
-            c1, c2 = st.columns(2)
-            c1.markdown(f"**样例 {i + 1} · 输入**")
-            c1.code(s.get("input", ""))
-            c2.markdown(f"**样例 {i + 1} · 输出**")
-            c2.code(s.get("output", ""))
-    with tab_more:
-        st.markdown("#### 数据范围")
-        st.markdown(p["constraints"] or "—")
-        if p.get("hint"):
-            st.markdown("#### 提示")
-            st.markdown(p["hint"])
+    # 力扣式双栏布局：左侧题目信息，右侧内嵌代码提交面板（做题不用跳页）
+    left, right = st.columns([3, 2], gap="large")
+    with left:
+        tab_desc, tab_samples, tab_more = st.tabs(["题目描述", "样例", "数据范围 / 提示"])
+        with tab_desc:
+            st.markdown(p["description"] or "—")
+            st.markdown("#### 输入格式")
+            st.markdown(p["input_description"] or "—")
+            st.markdown("#### 输出格式")
+            st.markdown(p["output_description"] or "—")
+        with tab_samples:
+            for i, s in enumerate(p.get("samples") or []):
+                c1, c2 = st.columns(2)
+                c1.markdown(f"**样例 {i + 1} · 输入**")
+                c1.code(s.get("input", ""))
+                c2.markdown(f"**样例 {i + 1} · 输出**")
+                c2.code(s.get("output", ""))
+        with tab_more:
+            st.markdown("#### 数据范围")
+            st.markdown(p["constraints"] or "—")
+            if p.get("hint"):
+                st.markdown("#### 提示")
+                st.markdown(p["hint"])
+    with right:
+        _submit_panel(pid)
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
     if c1.button("✏️ 编辑题目", width="stretch"):
         st.session_state["prob_view"] = "edit"
         st.rerun()
-    if c2.button("🚀 提交本题代码", width="stretch"):
-        st.session_state["submit_problem"] = pid
-        st.session_state["nav"] = "🚀 提交评测"
-        st.rerun()
-    if c3.button("📜 本题提交记录", width="stretch"):
+    if c2.button("📜 本题提交记录", width="stretch"):
         st.session_state["sub_filter_problem"] = pid
         st.session_state["nav"] = "📜 评测记录"
         st.rerun()
     if me.get("role") == "admin":
-        if c4.button("🗑 删除题目", width="stretch"):
+        if c3.button("🗑 删除题目", width="stretch"):
             st.session_state["confirm_delete"] = pid
         if st.session_state.get("confirm_delete") == pid:
             st.error(f"确认删除题目 {pid}？此操作不可恢复。")
@@ -724,39 +725,36 @@ def _problem_form():
 
 # ---------- 任务 3：评测与提交页面组 ----------
 
-def page_submit():
-    st.title("🚀 提交评测")
+def _submit_panel(pid: str):
+    """题目详情右侧的内嵌提交面板（力扣式布局）：选语言 → 写代码 → 提交 → 结果就地轮询展示。
+
+    代码/语言按题目 id 单独缓存（widget key），切换题目互不干扰。
+    """
+    st.markdown("#### 🚀 提交代码")
     try:
-        problems = api("GET", "/api/problems/")
         langs = (api("GET", "/api/languages/") or {}).get("name") or []
     except ApiError as e:
         friendly_error(e)
-        return
-    if not problems:
-        st.info("暂无题目。")
-        return
+        langs = []
     if not langs:
         st.info("暂无可用语言，请联系管理员注册。")
         return
-    preset = st.session_state.pop("submit_problem", None)
-    index = next((i for i, pr in enumerate(problems) if pr["id"] == preset), 0)
-    pid = st.selectbox("题目", [p["id"] for p in problems], index=index,
-                       format_func=lambda x: f"{x} · {next((p['title'] for p in problems if p['id'] == x), '')}")
-    lang = st.selectbox("语言", langs)
-    code = st.text_area("代码", height=320, placeholder="在此粘贴你的代码")
-    if st.button("提交评测", type="primary"):
-        if not code.strip():
-            st.error("代码不能为空。")
-            return
-        try:
-            resp = api("POST", "/api/submissions/",
-                       json={"problem_id": pid, "language": lang, "code": code})
-        except ApiError as e:
-            friendly_error(e)
-            return
-        sid = resp["submission_id"]
-        st.success(f"提交成功，评测 ID #{sid}，等待评测…")
-        _poll_submission(sid, show_log=True)
+    lang = st.selectbox("语言", langs, key=f"lang_{pid}")
+    code = st.text_area("代码", height=340, placeholder="在此粘贴你的代码", key=f"code_{pid}")
+    if not st.button("提交评测", type="primary", width="stretch", key=f"submit_{pid}"):
+        return
+    if not code.strip():
+        st.error("代码不能为空。")
+        return
+    try:
+        resp = api("POST", "/api/submissions/",
+                   json={"problem_id": pid, "language": lang, "code": code})
+    except ApiError as e:
+        friendly_error(e)
+        return
+    sid = resp["submission_id"]
+    st.success(f"提交成功，评测 ID #{sid}，等待评测…")
+    _poll_submission(sid, show_log=True)
 
 
 def page_submissions():
@@ -1194,8 +1192,6 @@ def main():
         page_register()
     elif page == "📋 题目":
         page_problems()
-    elif page == "🚀 提交评测":
-        page_submit()
     elif page == "📜 评测记录":
         page_submissions()
     elif page == "🙍 个人主页":

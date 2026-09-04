@@ -47,6 +47,8 @@ R3：模型调用期间 ticker 每 2s 推进度、cancel 推 final(cancelled) �
 - log 接口：details 仅管理员/公开题目可见；本人看未公开题目省略 details；
   403（已登录无权）与 200 都记 AccessLog；提交不存在返回 404 且不记审计。
 - GET /api/logs/access/ 返回纯数组（无 total）；Streamlit 审计页分页多取 1 条探测下一页。
+- 题目详情页力扣式双栏：左侧题面 tabs，右侧内嵌提交面板（语言/代码按题目 id 缓存 widget key），
+  提交后就地轮询结果；独立「提交评测」导航页已移除，代码提交统一走题目详情内嵌面板。
 - Streamlit AppTest 冒烟测试用 monkeypatch 把 OJ_API_BASE 指向死端口隔离真实后端，
   否则页面真实请求 live 后端 401 会触发 _clear_session 清空预置 me。
 - 提交列表 error/pending 条目只返回 {submission_id, status}（api.md）；submission_id、user_id 均为字符串。
