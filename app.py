@@ -41,12 +41,62 @@ class ApiError(Exception):
         self.msg = msg
 
 
+_SESSION_PARAM = "oj_s"   # URL 查询参数：会话 token（浏览器刷新后恢复登录态）
+_UID_PARAM = "oj_u"       # URL 查询参数：user_id（恢复时经后端重新校验，身份以后端会话为准）
+
+
 def _clear_session():
-    """清除本地登录态与页面状态（登出/会话过期时）。"""
+    """清除本地登录态与页面状态（登出/会话过期时），并清掉 URL 中的会话参数。"""
     for key in ("me", "cookies", "nav", "prob_view", "prob_id",
                 "sub_view", "sub_id", "confirm_delete",
                 "ai_view", "ai_task_id", "audit_user", "audit_problem", "audit_page"):
         st.session_state.pop(key, None)
+    try:
+        for k in (_SESSION_PARAM, _UID_PARAM):
+            st.query_params.pop(k, None)
+    except Exception:
+        pass   # 环境不支持 query_params 时静默降级
+
+
+def _persist_login():
+    """登录成功后把会话 token/user_id 写入 URL 查询参数，浏览器刷新后可据此恢复。"""
+    cookies = st.session_state.get("cookies") or {}
+    me = st.session_state.get("me")
+    if not cookies or not me:
+        return
+    try:
+        token = next(iter(cookies.values()))
+        st.query_params[_SESSION_PARAM] = token
+        st.query_params[_UID_PARAM] = str(me.get("user_id"))
+    except Exception:
+        pass
+
+
+def _restore_login():
+    """刷新后恢复登录态：从 URL 参数取 token 重新请求后端校验，后端仍是权限唯一来源。
+
+    Streamlit 的 session_state 随页面刷新丢失，因此登录态经 URL 参数跨刷新存活；
+    恢复时用 GET /api/users/{uid} 校验（本人或管理员可查），token/uid 被篡改或
+    会话过期都会校验失败并自动清除，回到未登录状态。
+    """
+    if st.session_state.get("me"):
+        return
+    try:
+        token = st.query_params.get(_SESSION_PARAM)
+        uid = st.query_params.get(_UID_PARAM)
+    except Exception:
+        return
+    if not token or not uid:
+        return
+    st.session_state["cookies"] = {"oj_session": token}   # 与后端 deps.SESSION_COOKIE 一致
+    try:
+        me = api("GET", f"/api/users/{uid}")
+    except ApiError:
+        # 校验失败：清掉 URL 参数与本地残留（api() 的 401 分支也会自动清）
+        st.session_state.pop("cookies", None)
+        _clear_session()
+        return
+    st.session_state["me"] = me
 
 
 def api(method: str, path: str, **kwargs):
@@ -90,7 +140,7 @@ _UI_CSS = """
 /* 全局：白底卡片式界面（洛谷配色 + 力扣细节） */
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
-header[data-testid="stHeader"] {background: transparent;}
+header[data-testid="stHeader"] {background: transparent; pointer-events: none;}
 .block-container {max-width: 1180px; padding-top: 2.2rem;}
 
 /* 页面标题：力扣式蓝色短横线点缀 */
@@ -252,11 +302,11 @@ def render_sidebar() -> str:
             pages = ["📋 题目", "📜 评测记录", "🙍 个人主页", "✨ AI 命题"]
             if me.get("role") == "admin":
                 pages += ["🛠 用户管理", "🛡 访问审计"]
-            nav = st.session_state.get("nav")
-            if nav not in pages:
-                nav = pages[0]
-            page = st.radio("导航", pages, index=pages.index(nav), label_visibility="collapsed")
-            st.session_state["nav"] = page
+            # 导航用 key 直接绑定 session_state，只播种默认值一次；
+            # 不要每次 rerun 传 index=旧值——会覆盖用户刚点击的选项，导致需双击才能切页。
+            if st.session_state.get("nav") not in pages:
+                st.session_state["nav"] = pages[0]
+            page = st.radio("导航", pages, key="nav", label_visibility="collapsed")
             if st.button("退出登录", width="stretch"):
                 try:
                     api("POST", "/api/auth/logout")
@@ -294,6 +344,7 @@ def page_login():
             friendly_error(e)
         return
     st.session_state["me"] = me
+    _persist_login()   # 刷新不丢登录态
     st.success(f"欢迎回来，{me['username']}！")
     time.sleep(0.5)
     st.rerun()
@@ -322,6 +373,7 @@ def page_register():
     # 注册成功后自动登录
     me = api("POST", "/api/auth/login", json={"username": username.strip(), "password": password})
     st.session_state["me"] = me
+    _persist_login()   # 刷新不丢登录态
     st.success(f"注册成功，欢迎你，{me['username']}！")
     time.sleep(0.5)
     st.rerun()
@@ -1185,6 +1237,7 @@ def _ai_home():
 
 def main():
     _inject_ui()
+    _restore_login()
     page = render_sidebar()
     if page == "🔑 登录":
         page_login()

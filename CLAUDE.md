@@ -51,6 +51,13 @@ R3：模型调用期间 ticker 每 2s 推进度、cancel 推 final(cancelled) �
   提交后就地轮询结果；独立「提交评测」导航页已移除，代码提交统一走题目详情内嵌面板。
 - Streamlit AppTest 冒烟测试用 monkeypatch 把 OJ_API_BASE 指向死端口隔离真实后端，
   否则页面真实请求 live 后端 401 会触发 _clear_session 清空预置 me。
+- 侧边栏导航 radio 用 `key="nav"` 绑定 session_state、只在首次/失效时播种默认值；
+  切勿每次 rerun 传 `index=旧值`，否则覆盖用户刚点的选项导致需双击才能切页（streamlit#3534）。
+  透明 stHeader 需加 `pointer-events: none`，避免不可见的固定头栏拦截顶部区域点击。
+- 刷新不丢登录态：session_state 随刷新丢失，登录/注册成功后 `_persist_login` 把会话 token 与
+  user_id 写入 URL 查询参数（oj_s/oj_u）；main() 启动时 `_restore_login` 重新请求后端
+  GET /api/users/{uid} 校验（本人或管理员可查），身份以后端会话为准，伪造/过期自动清除并回未登录；
+  登出与会话过期时 `_clear_session` 清掉 URL 参数。本版 Streamlit 无 st.cookies 可用。
 - 提交列表 error/pending 条目只返回 {submission_id, status}（api.md）；submission_id、user_id 均为字符串。
 - api.md 字段语义（2026-09 审计后对齐）：`counts` = 本题总分数（测试点数目×10，DB 列 total_score）；
   各结果统计经 extra 字段 `verdicts` 返回（DB 列 counts 存 dict）；

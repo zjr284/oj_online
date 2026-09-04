@@ -55,6 +55,41 @@ def test_audit_page_admin_only_and_renders(monkeypatch):
     assert any("题目 ID" in l for l in labels)
 
 
+def test_refresh_restore_rejects_forged_token(monkeypatch):
+    """刷新恢复登录态：URL 参数带伪造 token（或后端不可达）时，安全回到未登录而非报错。"""
+    monkeypatch.setenv("OJ_API_BASE", "http://127.0.0.1:1")
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.query_params["oj_s"] = "forged-token"
+    at.query_params["oj_u"] = "1"
+    at.run()
+    assert not at.exception
+    assert list(at.radio[0].options) == ["🔑 登录", "📝 注册"]
+
+
+def test_sidebar_nav_switches_page_on_single_click(monkeypatch):
+    """回归：侧边栏导航单击即切换页面且不回跳。
+
+    曾因每次 rerun 给 st.radio 传 index=旧值覆盖用户刚点的选项（streamlit#3534），
+    导致第一次点击被吞、需双击。修复后导航值由 key 绑定，一次点击即生效。
+    """
+    monkeypatch.setenv("OJ_API_BASE", "http://127.0.0.1:1")
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["me"] = {"username": "alice", "user_id": "2", "role": "user"}
+    at.run()
+    assert not at.exception
+    assert at.radio[0].value == "📋 题目"   # 默认页
+
+    at.radio[0].set_value("📜 评测记录").run()   # 单击一次
+    assert not at.exception
+    assert at.radio[0].value == "📜 评测记录"    # 选项不回跳
+    assert at.session_state["nav"] == "📜 评测记录"
+
+    at.radio[0].set_value("🙍 个人主页").run()   # 连续切换，每次都是一次点击
+    assert not at.exception
+    assert at.radio[0].value == "🙍 个人主页"
+    assert at.session_state["nav"] == "🙍 个人主页"
+
+
 def test_ai_page_renders_for_logged_in_user(monkeypatch):
     """Advance R1：登录用户（含普通用户）可进入 AI 命题页，配置/任务表单齐全。
 
