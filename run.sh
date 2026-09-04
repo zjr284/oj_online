@@ -55,7 +55,7 @@ fi
 echo
 echo "--------------------------------------------"
 echo "  Streamlit 前端  : http://localhost:8501"
-echo "  Web 前端（备选）: http://localhost:8000"
+echo "  后端 API        : http://localhost:8000"
 echo "  管理员账号      : admin / admintestpassword"
 echo "--------------------------------------------"
 

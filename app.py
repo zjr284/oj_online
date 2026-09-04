@@ -10,6 +10,7 @@
   不硬编码用户身份、按响应 code/msg 展示成败、不绕过后端直接读写数据
 """
 
+import html
 import json
 import os
 import time
@@ -28,6 +29,7 @@ VERDICT_TEXT = {
     "MLE": "超出内存限制", "RE": "运行时错误", "CE": "编译错误",
 }
 ROLE_TEXT = {"user": "用户", "admin": "管理员", "banned": "封禁"}
+ACCESS_TEXT = {"200": "✅ 允许", "401": "🚫 未登录", "403": "⛔ 拒绝"}
 
 
 # ---------- 统一 API 封装（任务 4） ----------
@@ -43,7 +45,7 @@ def _clear_session():
     """清除本地登录态与页面状态（登出/会话过期时）。"""
     for key in ("me", "cookies", "nav", "prob_view", "prob_id",
                 "sub_view", "sub_id", "confirm_delete", "submit_problem",
-                "ai_view", "ai_task_id"):
+                "ai_view", "ai_task_id", "audit_user", "audit_problem", "audit_page"):
         st.session_state.pop(key, None)
 
 
@@ -81,6 +83,161 @@ def friendly_error(err: ApiError):
         st.error(f"操作失败（{err.code}）：{err.msg}")
 
 
+# ---------- UI 主题（洛谷 × 力扣风格） ----------
+
+_UI_CSS = """
+<style>
+/* 全局：白底卡片式界面（洛谷配色 + 力扣细节） */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header[data-testid="stHeader"] {background: transparent;}
+.block-container {max-width: 1180px; padding-top: 2.2rem;}
+
+/* 页面标题：力扣式蓝色短横线点缀 */
+h1 {font-weight: 800; color: #1f2328; padding-bottom: 6px;}
+h1::after {content: ""; display: block; width: 56px; height: 4px; margin-top: 8px;
+           border-radius: 2px; background: linear-gradient(90deg, #3498db, #7fc4f0);}
+h2, h3 {color: #1f2328;}
+
+/* 侧边栏：白底 + 导航项胶囊高亮（选中蓝色底） */
+[data-testid="stSidebar"] {border-right: 1px solid #e5e7eb;}
+[data-testid="stSidebar"] [role="radiogroup"] label {
+  padding: 8px 12px; border-radius: 8px; margin: 2px 0; transition: background .15s;}
+[data-testid="stSidebar"] [role="radiogroup"] label:hover {background: #f0f7fe;}
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+  background: #e8f1fb; font-weight: 700; color: #2f80c7;}
+
+/* 按钮：圆角 + 主按钮蓝色渐变 */
+.stButton > button, [data-testid="stBaseButton-primary"], button[kind] {
+  border-radius: 8px; font-weight: 600; transition: all .15s;}
+[data-testid="stBaseButton-primary"], button[kind="primary"] {
+  background: linear-gradient(135deg, #3498db, #2f80c7); color: #fff; border: none;}
+[data-testid="stBaseButton-primary"]:hover, button[kind="primary"]:hover {
+  background: linear-gradient(135deg, #2f80c7, #276fae);}
+
+/* 指标卡：力扣统计卡（浅底圆角卡片） */
+[data-testid="stMetric"] {background: #f6f8fa; border: 1px solid #e5e7eb;
+  border-radius: 12px; padding: 14px 18px;}
+[data-testid="stMetricValue"] {color: #1f2328; font-weight: 700;}
+[data-testid="stMetricLabel"] {color: #6b7280;}
+
+/* 页签：选中蓝色加粗 */
+button[role="tab"] {border-radius: 8px 8px 0 0;}
+button[role="tab"][aria-selected="true"] {color: #2f80c7; font-weight: 700;}
+
+/* 代码块：力扣深色编辑器风格 */
+[data-testid="stCodeBlock"] pre {background: #1e2530 !important; border-radius: 8px;}
+
+/* 提示框：圆角 + 左侧状态色条 */
+[data-testid="stAlert"] {border-radius: 10px; border-left: 4px solid #94a3b8;}
+[data-testid="stAlert"][kind="success"] {border-left-color: #2cbb5d;}
+[data-testid="stAlert"][kind="info"] {border-left-color: #3498db;}
+[data-testid="stAlert"][kind="warning"] {border-left-color: #f59e0b;}
+[data-testid="stAlert"][kind="error"] {border-left-color: #d05451;}
+
+/* 表格容器与分割线 */
+[data-testid="stDataFrame"] {border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden;}
+hr {border-color: #e5e7eb;}
+[data-testid="stCaptionContainer"] {color: #6b7280;}
+
+/* 自定义 HTML 表格：洛谷题单风格卡片表 */
+.oj-card {border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; background: #fff;
+          box-shadow: 0 1px 2px rgba(0, 0, 0, .04); margin: .3rem 0 1rem;}
+.oj-table {width: 100%; border-collapse: collapse; font-size: 14px;}
+.oj-table thead th {background: #f6f8fa; color: #57606a; text-align: left; font-weight: 600;
+                    padding: 10px 14px; border-bottom: 1px solid #e5e7eb;}
+.oj-table tbody td {padding: 10px 14px; border-bottom: 1px solid #f0f2f5; color: #1f2328;}
+.oj-table tbody tr:hover {background: #f8fafc;}
+.oj-table tbody tr:last-child td {border-bottom: none;}
+.oj-mono {font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #57606a;}
+</style>
+"""
+
+_HERO = """
+<div style="background: linear-gradient(135deg, #3498db, #5eb0ec); border-radius: 14px;
+            padding: 26px 32px; color: #fff; margin: 0 0 1.1rem;">
+  <div style="font-size: 1.45rem; font-weight: 800;">⚖️ Online Judge</div>
+  <div style="opacity: .92; margin-top: 4px;">清华 Python 课程 · 实验二：在线评测系统</div>
+</div>
+"""
+
+# 徽章配色（力扣式圆角胶囊）：绿=通过 / 红=未通过 / 黄=等待 / 蓝=信息 / 灰=中性
+_BADGE_COLORS = {
+    "green": ("#e6f6ec", "#1a7f4b"),
+    "red": ("#fdecec", "#c0392b"),
+    "amber": ("#fff4e0", "#b7791f"),
+    "blue": ("#e8f1fb", "#2b6cb0"),
+    "teal": ("#e0f5f1", "#0d9488"),
+    "gray": ("#eef1f4", "#57606a"),
+}
+
+
+def _badge(text: str, kind: str = "gray") -> str:
+    """力扣式状态胶囊（HTML inline-block）。"""
+    bg, fg = _BADGE_COLORS.get(kind, _BADGE_COLORS["gray"])
+    return (f'<span style="display:inline-block;padding:2px 10px;border-radius:999px;'
+            f'background:{bg};color:{fg};font-size:12px;font-weight:600;'
+            f'white-space:nowrap">{html.escape(str(text))}</span>')
+
+
+def _html_table(headers: list[str], rows: list[str]) -> str:
+    """洛谷题单风格 HTML 表格（rows 每项为 `<td>…</td>` 拼接的 `<tr>`）。"""
+    thead = "".join(f"<th>{html.escape(h)}</th>" for h in headers)
+    return (f'<div class="oj-card"><table class="oj-table">'
+            f'<thead><tr>{thead}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+
+
+def _diff_badge(diff: str) -> str:
+    """难度徽章（力扣配色）：简单/入门→青绿、中等→金黄、困难→红。"""
+    d = (diff or "").strip()
+    if not d:
+        return "—"
+    if any(k in d for k in ("简", "入", "易", "easy")):
+        return _badge(d, "teal")
+    if any(k in d for k in ("难", "困", "hard")):
+        return _badge(d, "red")
+    return _badge(d, "amber")
+
+
+def _status_badge(status) -> str:
+    s = str(status or "pending")
+    return {"success": _badge(STATUS_TEXT["success"], "green"), "error": _badge(STATUS_TEXT["error"], "red"),
+            "pending": _badge(STATUS_TEXT["pending"], "amber")}.get(s, _badge(s, "gray"))
+
+
+def _role_badge(role) -> str:
+    r = str(role or "user")
+    return {"admin": _badge("管理员", "blue"), "banned": _badge("封禁", "red"),
+            "user": _badge("用户", "gray")}.get(r, _badge(r, "gray"))
+
+
+def _access_badge(status) -> str:
+    s = str(status)
+    return {"200": _badge(ACCESS_TEXT["200"], "green"), "401": _badge(ACCESS_TEXT["401"], "amber"),
+            "403": _badge(ACCESS_TEXT["403"], "red")}.get(s, _badge(s, "gray"))
+
+
+def _ai_status_badge(status) -> str:
+    s = str(status or "pending")
+    return {"done": _badge("完成", "green"), "failed": _badge("失败", "red"),
+            "running": _badge("执行中", "blue"), "cancelled": _badge("已中断", "gray"),
+            "pending": _badge("等待中", "amber")}.get(s, _badge(s, "gray"))
+
+
+def _verdict_pill(result: str, count) -> str:
+    """测试点统计彩色胶囊（AC 绿 / WA·RE·CE 红 / TLE·MLE 黄）。"""
+    r = str(result or "UNK").upper()
+    kind = {"AC": "green", "WA": "red", "RE": "red", "CE": "red",
+            "TLE": "amber", "MLE": "amber"}.get(r, "gray")
+    text = f"{r} × {count} {VERDICT_TEXT.get(r, '')}"
+    return _badge(text, kind)
+
+
+def _inject_ui():
+    """注入全局主题 CSS（每页开头调用一次）。"""
+    st.markdown(_UI_CSS, unsafe_allow_html=True)
+
+
 # ---------- 侧边栏：登录态 + 导航 ----------
 
 def render_sidebar() -> str:
@@ -94,7 +251,7 @@ def render_sidebar() -> str:
             st.divider()
             pages = ["📋 题目", "🚀 提交评测", "📜 评测记录", "🙍 个人主页", "✨ AI 命题"]
             if me.get("role") == "admin":
-                pages.append("🛠 用户管理")
+                pages += ["🛠 用户管理", "🛡 访问审计"]
             nav = st.session_state.get("nav")
             if nav not in pages:
                 nav = pages[0]
@@ -115,6 +272,7 @@ def render_sidebar() -> str:
 # ---------- 任务 1：用户页面组 ----------
 
 def page_login():
+    st.markdown(_HERO, unsafe_allow_html=True)
     st.title("🔑 登录")
     with st.form("login-form"):
         username = st.text_input("用户名")
@@ -142,6 +300,7 @@ def page_login():
 
 
 def page_register():
+    st.markdown(_HERO, unsafe_allow_html=True)
     st.title("📝 注册")
     with st.form("register-form"):
         username = st.text_input("用户名（3–40 字符）")
@@ -176,7 +335,7 @@ def page_profile():
     except ApiError as e:
         friendly_error(e)
         return
-    st.markdown(f"### {u['username']}　·　{ROLE_TEXT.get(u.get('role'), u.get('role'))}")
+    st.markdown(f"### {html.escape(u['username'])}　{_role_badge(u.get('role'))}", unsafe_allow_html=True)
     st.caption(f"注册时间：{u.get('join_time')}")
     submit_count = int(u.get("submit_count") or 0)
     resolve_count = int(u.get("resolve_count") or 0)
@@ -197,13 +356,16 @@ def page_admin_users():
     users = data.get("users", [])
     st.caption(f"共 {data.get('total', 0)} 人")
     if users:
-        st.dataframe(pd.DataFrame([
-            {"ID": u.get("user_id"), "用户名": u.get("username"),
-             "角色": ROLE_TEXT.get(u.get("role"), u.get("role")),
-             "注册时间": u.get("join_time"), "提交数": u.get("submit_count"),
-             "通过题数": u.get("resolve_count")}
-            for u in users
-        ]), width="stretch", hide_index=True)
+        rows = "".join(
+            f"<tr><td class='oj-mono'>#{u.get('user_id')}</td>"
+            f"<td>{html.escape(str(u.get('username', '')))}</td>"
+            f"<td>{_role_badge(u.get('role'))}</td>"
+            f"<td>{html.escape(str(u.get('join_time', '—')))}</td>"
+            f"<td>{u.get('submit_count', 0)}</td>"
+            f"<td>{u.get('resolve_count', 0)}</td></tr>"
+            for u in users)
+        st.markdown(_html_table(["ID", "用户名", "角色", "注册时间", "提交数", "通过题数"], rows),
+                    unsafe_allow_html=True)
 
     st.divider()
     if not users:
@@ -245,6 +407,67 @@ def page_admin_users():
                     friendly_error(e)
 
 
+def page_audit_logs():
+    """Step 5 日志与权限：访问审计列表（仅管理员，GET /api/logs/access/）。
+
+    接口返回纯数组无 total：多取 1 条探测下一页；筛选/页码存 session_state。
+    """
+    st.title("🛡 访问审计")
+    st.caption("记录所有评测日志查看行为（允许与拒绝）· 仅管理员可见")
+
+    if "audit_user" not in st.session_state:
+        st.session_state["audit_user"] = ""
+    if "audit_problem" not in st.session_state:
+        st.session_state["audit_problem"] = ""
+    if "audit_page" not in st.session_state:
+        st.session_state["audit_page"] = 1
+
+    c1, c2, c3 = st.columns(3)
+    user_id = c1.text_input("用户 ID（筛选）", value=st.session_state["audit_user"], placeholder="留空为全部")
+    problem_id = c2.text_input("题目 ID（筛选）", value=st.session_state["audit_problem"], placeholder="留空为全部")
+    if c3.button("应用筛选"):
+        st.session_state["audit_user"] = user_id.strip()
+        st.session_state["audit_problem"] = problem_id.strip()
+        st.session_state["audit_page"] = 1
+        st.rerun()
+
+    page_size = 20
+    params = {"page": st.session_state["audit_page"], "page_size": page_size + 1}
+    if st.session_state["audit_user"]:
+        params["user_id"] = st.session_state["audit_user"]
+    if st.session_state["audit_problem"]:
+        params["problem_id"] = st.session_state["audit_problem"]
+    try:
+        rows = api("GET", "/api/logs/access/", params=params)
+    except ApiError as e:
+        friendly_error(e)
+        return
+    has_next = len(rows) > page_size
+    rows = rows[:page_size]
+
+    if not rows:
+        st.info("暂无审计记录。")
+    else:
+        rows_html = "".join(
+            f"<tr><td>{html.escape(str(r.get('user_id')))}</td>"
+            f"<td class='oj-mono'>{html.escape(str(r.get('problem_id')))}</td>"
+            f"<td>{html.escape(str(r.get('action')))}</td>"
+            f"<td>{_access_badge(r.get('status'))}</td>"
+            f"<td>{html.escape(str(r.get('time')))}</td></tr>"
+            for r in rows)
+        st.markdown(_html_table(["用户", "题目", "行为", "结果", "时间"], rows_html),
+                    unsafe_allow_html=True)
+
+    prev_col, info_col, next_col = st.columns([1, 2, 1])
+    if prev_col.button("上一页", disabled=st.session_state["audit_page"] <= 1, width="stretch"):
+        st.session_state["audit_page"] -= 1
+        st.rerun()
+    info_col.markdown(f"第 {st.session_state['audit_page']} 页")
+    if next_col.button("下一页", disabled=not has_next, width="stretch"):
+        st.session_state["audit_page"] += 1
+        st.rerun()
+
+
 # ---------- 任务 2：题目页面组 ----------
 
 def page_problems():
@@ -273,7 +496,12 @@ def _problem_list():
     if not problems:
         st.info("暂无题目，点击上方按钮创建第一道题。")
         return
-    st.dataframe(pd.DataFrame(problems), width="stretch", hide_index=True)
+    # 洛谷题单风格列表（列表接口仅返回 id/title）
+    rows = "".join(
+        f"<tr><td class='oj-mono'>{html.escape(p['id'])}</td>"
+        f"<td>{html.escape(p['title'])}</td></tr>"
+        for p in problems)
+    st.markdown(_html_table(["题目 ID", "标题"], rows), unsafe_allow_html=True)
     sel = st.selectbox(
         "查看题目详情", [p["id"] for p in problems],
         format_func=lambda pid: f"{pid} · {next((p['title'] for p in problems if p['id'] == pid), '')}",
@@ -299,16 +527,17 @@ def _problem_detail():
         return
 
     st.title(p["title"])
-    meta = f"题目 ID：{p['id']} · 时间限制 {p.get('time_limit')}s · 内存限制 {p.get('memory_limit')}MB"
+    meta = (f"题目 ID：<span class='oj-mono'>{html.escape(p['id'])}</span>"
+            f" · 时间限制 {p.get('time_limit')}s · 内存限制 {p.get('memory_limit')}MB")
     if p.get("difficulty"):
-        meta += f" · 难度 {p['difficulty']}"
+        meta += f" · {_diff_badge(p['difficulty'])}"
     if p.get("author"):
-        meta += f" · 作者 {p['author']}"
+        meta += f" · 作者 {html.escape(str(p['author']))}"
     if p.get("source"):
-        meta += f" · 来源 {p['source']}"
-    st.caption(meta)
+        meta += f" · 来源 {html.escape(str(p['source']))}"
+    st.markdown(f"<p style='color:#6b7280;font-size:.95rem'>{meta}</p>", unsafe_allow_html=True)
     if p.get("tags"):
-        st.markdown("　".join(f"`{t}`" for t in p["tags"]))
+        st.markdown(" ".join(_badge(t, "blue") for t in p["tags"]), unsafe_allow_html=True)
 
     tab_desc, tab_samples, tab_more = st.tabs(["题目描述", "样例", "数据范围 / 提示"])
     with tab_desc:
@@ -577,13 +806,19 @@ def _submission_list():
     if not subs:
         st.info("暂无提交记录。")
         return
-    st.dataframe(pd.DataFrame([
-        {"ID": s.get("submission_id"), "题目": s.get("problem_id", "—"),
-         "用户": s.get("user_id", "—"), "语言": s.get("language", "—"),
-         "状态": STATUS_TEXT.get(s.get("status"), s.get("status", "—")).replace("✅ ", "").replace("❌ ", "").replace("⏳ ", ""),
-         "得分": s.get("score", "—"), "时间": s.get("submit_time", "—")}
-        for s in subs
-    ]), width="stretch", hide_index=True)
+    # 力扣评测列表风格：状态徽章 + 等宽 ID（pending/error 条目仅返回 id/status，其余列占位）
+    is_admin = me.get("role") == "admin"
+    headers = ["ID", "题目"] + (["用户"] if is_admin else []) + ["语言", "状态", "得分", "时间"]
+    rows = "".join(
+        f"<tr><td class='oj-mono'>#{s.get('submission_id')}</td>"
+        f"<td class='oj-mono'>{html.escape(str(s.get('problem_id', '—')))}</td>"
+        + (f"<td>{html.escape(str(s.get('user_id', '—')))}</td>" if is_admin else "")
+        + f"<td>{html.escape(str(s.get('language', '—')))}</td>"
+          f"<td>{_status_badge(s.get('status'))}</td>"
+          f"<td>{s.get('score', '—')}</td>"
+          f"<td>{html.escape(str(s.get('submit_time', '—')))}</td></tr>"
+        for s in subs)
+    st.markdown(_html_table(headers, rows), unsafe_allow_html=True)
     sel = st.selectbox("查看提交详情", [s["submission_id"] for s in subs],
                        format_func=lambda x: f"#{x}")
     if st.button("打开详情"):
@@ -655,7 +890,7 @@ def _info_text(v):
 
 def _render_submission(s: dict, show_log: bool):
     status = s.get("status", "pending")
-    st.markdown(f"### 提交 #{s.get('submission_id')} — {STATUS_TEXT.get(status, status)}")
+    st.markdown(f"### 提交 #{s.get('submission_id')}　{_status_badge(status)}", unsafe_allow_html=True)
     meta = " · ".join(x for x in (
         f"题目 {s.get('problem_id', '—')}", f"用户 {s.get('user_id', '—')}",
         f"语言 {s.get('language', '—')}", f"提交于 {s.get('submit_time', '—')}") if x)
@@ -670,8 +905,8 @@ def _render_submission(s: dict, show_log: bool):
     c1.metric("得分", score if score is not None else "—")
     c2.metric("总分", counts if counts is not None else "—")
     if verdicts:
-        st.markdown("　".join(
-            f"`{k}` × {v} {VERDICT_TEXT.get(k, '')}" for k, v in verdicts.items()))
+        st.markdown(" ".join(_verdict_pill(k, v) for k, v in verdicts.items()),
+                    unsafe_allow_html=True)
     # CE / RE / TLE 等错误明确展示（任务 3）
     # compile_info / run_info 为 api.md 对象结构 {"result", "message"}，展示 message
     if s.get("compile_info"):
@@ -785,13 +1020,11 @@ def _ai_task_detail():
         friendly_error(e)
         return
     status = d.get("status", "pending")
-    badge = {"pending": "⏳ 等待中", "running": "🔄 执行中", "done": "✅ 完成",
-             "cancelled": "🛑 已中断", "failed": "❌ 失败"}.get(status, status)
     st.title(f"AI 命题任务 #{tid}")
     st.caption(" · ".join(x for x in (
         d.get("requirement", ""), f"改编自 {d['problem_id']}" if d.get("problem_id") else "",
         f"模型 {d.get('model') or '—'}", f"创建于 {d.get('created_at') or '—'}") if x))
-    st.markdown(f"### {badge}")
+    st.markdown(f"### {_ai_status_badge(status)}", unsafe_allow_html=True)
     st.progress(min(float(d.get("progress") or 0), 1.0))
 
     if status in ("pending", "running"):
@@ -934,13 +1167,15 @@ def _ai_home():
     if not tasks:
         st.info("暂无任务，创建第一个命题任务吧。")
         return
-    st.dataframe(pd.DataFrame([
-        {"ID": t.get("task_id"), "状态": {"pending": "等待中", "running": "执行中", "done": "完成",
-                                         "cancelled": "已中断", "failed": "失败"}.get(t.get("status"), t.get("status")),
-         "进度": f"{round((t.get('progress') or 0) * 100)}%", "模型": t.get("model", "—"),
-         "创建时间": t.get("created_at", "—")}
-        for t in tasks
-    ]), width="stretch", hide_index=True)
+    rows_html = "".join(
+        f"<tr><td class='oj-mono'>#{t.get('task_id')}</td>"
+        f"<td>{_ai_status_badge(t.get('status'))}</td>"
+        f"<td>{round((t.get('progress') or 0) * 100)}%</td>"
+        f"<td>{html.escape(str(t.get('model', '—')))}</td>"
+        f"<td>{html.escape(str(t.get('created_at', '—')))}</td></tr>"
+        for t in tasks)
+    st.markdown(_html_table(["ID", "状态", "进度", "模型", "创建时间"], rows_html),
+                unsafe_allow_html=True)
     sel = st.selectbox("查看任务详情", [t["task_id"] for t in tasks], format_func=lambda x: f"#{x}")
     if st.button("打开详情"):
         st.session_state["ai_task_id"] = sel
@@ -951,6 +1186,7 @@ def _ai_home():
 # ---------- 入口 ----------
 
 def main():
+    _inject_ui()
     page = render_sidebar()
     if page == "🔑 登录":
         page_login()
@@ -966,6 +1202,8 @@ def main():
         page_profile()
     elif page == "🛠 用户管理":
         page_admin_users()
+    elif page == "🛡 访问审计":
+        page_audit_logs()
     elif page == "✨ AI 命题":
         page_ai()
 

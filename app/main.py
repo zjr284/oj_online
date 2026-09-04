@@ -1,4 +1,4 @@
-"""应用入口：装配路由、生命周期与静态页面。
+"""应用入口：装配路由与生命周期（纯 API 服务，前端为 Streamlit app.py）。
 
 启动方式：
     uvicorn app.main:app --reload
@@ -6,7 +6,6 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 
 from app import config
 from app.core.errors import register_exception_handlers
@@ -45,6 +44,3 @@ app.include_router(submissions.router)  # Step 3 评测管理（+ Step 5 提交�
 app.include_router(logs.router)         # Step 5 访问审计
 app.include_router(maintenance.router)  # 测试辅助 /api/reset/
 app.include_router(ai.router)           # Advance：AI 智能命题
-
-# 前端静态页面（挂在最后，避免覆盖 /api 路由）
-app.mount("/", StaticFiles(directory=config.BASE_DIR / "static", html=True), name="static")

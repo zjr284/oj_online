@@ -10,10 +10,11 @@ AI 命题（可配置模型/实时进度/中断/用量计费）与配套前端�
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/uvicorn app.main:app --reload   # 或 ./run.sh
+./run.sh                                    # 一键启动：后端 API(8000) + Streamlit 前端(8501)
 ```
 
-打开 http://127.0.0.1:8000 ，初始管理员：`admin` / `admintestpassword`。
+打开 http://127.0.0.1:8501 （Streamlit 前端），初始管理员：`admin` / `admintestpassword`。
+后端为纯 API 服务（http://127.0.0.1:8000 ）。
 
 运行测试：
 
@@ -29,14 +30,14 @@ python3 -m venv .venv
 | 数据库 | SQLite + SQLAlchemy 2.0 async（aiosqlite） | 零部署成本，验收环境开箱即用；换 Postgres 只改 `config.DB_URL` |
 | 题目存储 | JSON 文件（`data/problems/`，每题一个） | Step 1 实验要求；`ProblemStore` 抽象后可换数据库 |
 | 认证 | Cookie Session + bcrypt（兼容旧 PBKDF2 哈希） | 与 login/logout API 天然对应 |
-| 前端 | 静态 HTML/JS（无构建步骤） | 离线验收环境可直接运行；API 与前端解耦，随时可换 Vue/React |
+| 前端 | Streamlit（app.py，step6.md 要求） | 与 API 解耦（Cookie 经 httpx 传递）；离线验收环境可直接运行 |
 | 判题沙箱 | subprocess + `resource.setrlimit`（CPU/内存/进程数）+ psutil 内存监控 + 墙钟兜底 | 见 `app/judge/runner.py` 设计说明 |
 
 ## 目录结构
 
 ```
 app/
-├── main.py              # 应用入口：路由装配、生命周期、静态页面
+├── main.py              # 应用入口：路由装配、生命周期（纯 API）
 ├── config.py            # 全局配置（路径/限制/初始管理员/限流）
 ├── database.py          # 异步引擎与会话（换数据库只改这里）
 ├── models/              # ORM 模型：User/Session/Submission/TestcaseResult/
@@ -66,8 +67,8 @@ app/
     └── runner.py        # 判题引擎：沙箱执行/资源限制/输出比对（Step 2） ✅
 
 data/problems/           # 题目配置文件（sum_2 / P1001 示例）
-static/                  # 前端（题目/评测/AI 命题/用户管理，hash 路由）
-tests/                   # pytest 接口测试（19 个，含真实判题端到端与 AI 全流程）
+app.py                   # Streamlit 前端（题目/评测/用户管理/访问审计/AI 命题页面）
+tests/                   # pytest 接口测试（202 个，含真实判题端到端、AI 全流程与 Streamlit 冒烟）
 ```
 
 ## 分层约定（扩展方式）
@@ -79,7 +80,7 @@ models   →  数据结构（ORM / 文件）
 ```
 
 **新增功能的标准做法**：在对应域下写 service → 写 router → 在 `main.py` 挂载
-→ 前端加视图（`static/js/views/`）+ 注册路由（`app.js` 的 routes）。
+→ Streamlit 前端在 `app.py` 加页面函数，并在 `render_sidebar` 导航与 `main()` 分发中注册。
 
 ## 评测流水线（Step 2/3）
 

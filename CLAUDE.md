@@ -27,14 +27,15 @@ curl -c jar -X POST localhost:8000/api/auth/login -H 'Content-Type: application/
 ## 分层
 
 routers（HTTP 语义）→ services（业务逻辑）→ models / ProblemStore（存储）。
-新增模块：service → router → `main.py` 挂载 → 前端视图（`static/js/views/`，路由注册在 `static/js/app.js`）。
+新增模块：service → router → `main.py` 挂载 → Streamlit 页面（app.py：render_sidebar 导航 + main() 分发）。
 
 ## 状态
 
 已实现：Step 1–6 + Advance AI 命题全部完成——题目管理（含 log_visibility）、评测引擎（沙箱/CE/TLE/MLE/RE/AC/WA）、
 评测管理（异步编排/重判代际/重启恢复/限流 429）、用户管理（bcrypt/操作日志/角色权限）、
-评测日志（明细可见性 + 访问审计）、Step 6 前端有两套：Streamlit（app.py，step6.md 要求，用户/题目/评测三组页面，
-Cookie 经 httpx 传递、表单提交前格式检查、提交后轮询）、Web 前端（提交面板/评测列表详情轮询/用户管理）、
+评测日志（明细可见性 + 访问审计）、Step 6 前端：Streamlit（app.py，step6.md 要求，题目/评测/用户管理/
+访问审计/AI 命题页面，Cookie 经 httpx 传递、表单提交前格式检查、提交后轮询；
+洛谷×力扣主题：.streamlit/config.toml 配色 + app.py `_UI_CSS` 全局样式与 `_badge`/`_html_table` 徽章表格）、
 AI 命题（model-config/problem-tasks/SSE 进度/取消/用量计费，api_key Fernet 加密永不返回；
 R3：模型调用期间 ticker 每 2s 推进度、cancel 推 final(cancelled) 即时通知观察者；
 费用 = 用户填写价格或接口返回 usage.cost，未填且接口未返回则 cost=null 标注；
@@ -45,6 +46,9 @@ R3：模型调用期间 ticker 每 2s 推进度、cancel 推 final(cancelled) �
 - 提交限流 `config.SUBMIT_RATE_LIMIT`（环境变量 `OJ_SUBMIT_RATE_LIMIT`），测试用 monkeypatch 收紧。
 - log 接口：details 仅管理员/公开题目可见；本人看未公开题目省略 details；
   403（已登录无权）与 200 都记 AccessLog；提交不存在返回 404 且不记审计。
+- GET /api/logs/access/ 返回纯数组（无 total）；Streamlit 审计页分页多取 1 条探测下一页。
+- Streamlit AppTest 冒烟测试用 monkeypatch 把 OJ_API_BASE 指向死端口隔离真实后端，
+  否则页面真实请求 live 后端 401 会触发 _clear_session 清空预置 me。
 - 提交列表 error/pending 条目只返回 {submission_id, status}（api.md）；submission_id、user_id 均为字符串。
 - api.md 字段语义（2026-09 审计后对齐）：`counts` = 本题总分数（测试点数目×10，DB 列 total_score）；
   各结果统计经 extra 字段 `verdicts` 返回（DB 列 counts 存 dict）；

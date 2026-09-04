@@ -24,11 +24,44 @@ def test_login_empty_fields_shows_friendly_error():
     assert any("请输入用户名和密码" in str(e.value) for e in at.error)
 
 
-def test_ai_page_renders_for_logged_in_user():
+def test_audit_page_admin_only_and_renders(monkeypatch):
+    """Step 5：访问审计导航仅管理员可见；页面可渲染（后端未启动时容错报错）。
+
+    OJ_API_BASE 指向死端口隔离真实后端，避免 live 401 清空会话影响断言。
+    """
+    monkeypatch.setenv("OJ_API_BASE", "http://127.0.0.1:1")
+    # 普通用户：导航中不出现访问审计
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["me"] = {"username": "alice", "user_id": "2", "role": "user"}
+    at.run()
+    assert not at.exception
+    assert "🛡 访问审计" not in list(at.radio[0].options)
+
+    # 管理员：导航可见，页面渲染出筛选表单与分页控件
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["me"] = {"username": "root", "user_id": "1", "role": "admin"}
+    at.run()
+    assert not at.exception
+    options = list(at.radio[0].options)
+    assert "🛡 访问审计" in options
+    at.radio[0].set_value("🛡 访问审计").run()
+    assert not at.exception
+    texts = (" ".join(str(md.value) for md in at.markdown)
+             + " ".join(str(t.value) for t in at.title)
+             + " ".join(str(e.value) for e in at.error))
+    assert "访问审计" in texts
+    labels = [ti.label for ti in at.text_input]
+    assert any("用户 ID" in l for l in labels)
+    assert any("题目 ID" in l for l in labels)
+
+
+def test_ai_page_renders_for_logged_in_user(monkeypatch):
     """Advance R1：登录用户（含普通用户）可进入 AI 命题页，配置/任务表单齐全。
 
-    后端未启动时页面仍可渲染（页面内对后端调用均容错）。
+    后端未启动时页面仍可渲染（页面内对后端调用均容错）；
+    OJ_API_BASE 指向死端口隔离真实后端。
     """
+    monkeypatch.setenv("OJ_API_BASE", "http://127.0.0.1:1")
     at = AppTest.from_file(APP, default_timeout=30)
     at.session_state["me"] = {"username": "alice", "user_id": "2", "role": "user"}
     at.run()
