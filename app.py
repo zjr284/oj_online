@@ -42,7 +42,8 @@ class ApiError(Exception):
 def _clear_session():
     """清除本地登录态与页面状态（登出/会话过期时）。"""
     for key in ("me", "cookies", "nav", "prob_view", "prob_id",
-                "sub_view", "sub_id", "confirm_delete", "submit_problem"):
+                "sub_view", "sub_id", "confirm_delete", "submit_problem",
+                "ai_view", "ai_task_id"):
         st.session_state.pop(key, None)
 
 
@@ -965,6 +966,8 @@ def main():
         page_profile()
     elif page == "🛠 用户管理":
         page_admin_users()
+    elif page == "✨ AI 命题":
+        page_ai()
 
 
 main()

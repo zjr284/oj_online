@@ -2,6 +2,9 @@
 import asyncio
 import json
 
+import httpx
+
+from app.main import app
 from conftest import login
 
 PROBLEM = {
@@ -117,6 +120,40 @@ async def test_model_config_security(client):
     assert (await client.put("/api/ai/model-config", json=bad)).status_code == 400
     bad = dict(CONFIG, input_price=-1)
     assert (await client.put("/api/ai/model-config", json=bad)).status_code == 400
+
+
+async def test_get_config_unconfigured_and_events_guards(client):
+    # 未配置模型：GET 返回 api_key_configured: false（不 404/500）
+    await login(client, "admin", "admintestpassword")
+    resp = await client.get("/api/ai/model-config")
+    assert resp.status_code == 200
+    assert resp.json()["data"] == {"api_key_configured": False}
+
+    # events 接口：未登录 401 / 任务不存在 404（均在响应开始前返回）
+    anon = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+    async with anon:
+        assert (await anon.get("/api/ai/problem-tasks/1/events")).status_code == 401
+    assert (await client.get("/api/ai/problem-tasks/99999/events")).status_code == 404
+    assert (await client.get("/api/ai/problem-tasks/99999")).status_code == 404
+    assert (await client.put("/api/ai/problem-tasks/99999/cancel")).status_code == 404
+
+
+async def test_restart_stale_tasks_marked_failed(client):
+    """进程重启后遗留的 pending/running 任务标记为 failed（api.md 失败兜底）。"""
+    from app.database import SessionLocal
+    from app.models import AiTask
+    from app.services import ai_service
+    # 直接写库构造“上次进程遗留”的 pending/running 任务（不启动真实后台任务）
+    await login(client, "admin", "admintestpassword")
+    async with SessionLocal() as db:
+        db.add(AiTask(user_id=1, requirement="遗留任务", status="pending"))
+        db.add(AiTask(user_id=1, requirement="遗留任务2", status="running"))
+        await db.commit()
+    await ai_service.fail_stale_tasks()
+    for tid in (1, 2):
+        d = (await client.get(f"/api/ai/problem-tasks/{tid}")).json()["data"]
+        assert d["status"] == "failed"
+        assert "restart" in d["result"]["error"]
 
 
 async def test_no_config_and_missing_problem(client):
