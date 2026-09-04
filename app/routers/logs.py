@@ -1,10 +1,10 @@
 """Step 5 访问审计接口：GET /api/logs/access/ 仅管理员。
 
-筛选参数：user_id, problem_id, page, page_size（语义同 submissions 列表）。
+筛选参数：user_id（str，api.md）、problem_id、page、page_size（分页语义同 submissions 列表）。
 action 仅为 view_logs；status 记录访问结果（200 允许 / 403 拒绝）。
 不记录：未登录、评测不存在、参数错误的访问（见 submissions.py 的 log 接口）。
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,10 +18,10 @@ router = APIRouter(prefix="/api/logs", tags=["logs"])
 
 @router.get("/access/")
 async def list_access_logs(
-    user_id: int | None = None,
+    user_id: str | None = None,   # api.md：user_id 为 str；SQLite 数值列与数字串比较自动匹配
     problem_id: str | None = None,
-    page: int | None = None,
-    page_size: int | None = None,
+    page: int | None = Query(None, ge=1),
+    page_size: int | None = Query(None, ge=1),
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):

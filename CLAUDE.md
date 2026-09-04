@@ -49,7 +49,8 @@ R3：模型调用期间 ticker 每 2s 推进度、cancel 推 final(cancelled) �
 - api.md 字段语义（2026-09 审计后对齐）：`counts` = 本题总分数（测试点数目×10，DB 列 total_score）；
   各结果统计经 extra 字段 `verdicts` 返回（DB 列 counts 存 dict）；
   `compile_info`/`run_info` 为 {"result", "message"} 对象（DB 存 JSON 字符串）；
-  成功 msg 默认 "success"，各接口特定 msg 见 api.md 示例（add success / login success 等）。
+  成功 msg 默认 "success"，各接口特定 msg 见 api.md 示例（add success / login success 等）；
+  用户列表按 submit_count 降序（并列按 user_id 升序，翻页稳定），与 api.md 示例一致。
 - 安全校验：题目 id 限 `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`（防经 body 的路径穿越）、
   必填字段非空、samples/testcases 非空、time/memory 限制为正；语言 name/file_ext 限安全字符集。
 - 评测沙箱：运行与编译阶段均限 RLIMIT_CPU/RLIMIT_FSIZE/RLIMIT_NPROC(4096)；

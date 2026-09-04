@@ -12,7 +12,7 @@
 """
 import re
 
-from fastapi import APIRouter, Depends, Path
+from fastapi import APIRouter, Body, Depends, Path
 
 from app.core.deps import get_current_user, require_admin
 from app.core.errors import ApiError, ok
@@ -68,7 +68,9 @@ async def delete_problem(problem_id: str = Depends(valid_problem_id),
 
 @router.put("/{problem_id}/log_visibility")
 async def set_log_visibility(
-    problem_id: str, body: LogVisibilityIn, admin: User = Depends(require_admin)
+    problem_id: str = Depends(valid_problem_id),
+    body: LogVisibilityIn = Body(...),
+    admin: User = Depends(require_admin),
 ):
     await store.set_public_cases(problem_id, body.public_cases)
     return ok({"problem_id": problem_id, "public_cases": body.public_cases},

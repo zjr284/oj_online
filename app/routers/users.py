@@ -2,6 +2,7 @@
 
 分页语义（api.md）：page 与 page_size 全空 = 查全部；
 page 空 page_size 非空 = 第一页；page 非空 page_size 空 = 参数错误。
+列表按 submit_count 降序（并列按 user_id 升序），与 api.md 示例一致。
 """
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
@@ -10,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_current_user, require_admin
 from app.core.errors import ApiError, ok
 from app.database import get_db
-from app.models import RoleChangeLog, User
+from app.models import RoleChangeLog, Submission, User
 from app.schemas.user import RegisterIn, RoleIn
 from app.services.user_service import create_user, user_detail, user_public
 
@@ -52,7 +53,14 @@ async def list_users(
     admin: User = Depends(require_admin),
 ):
     total = await db.scalar(select(func.count()).select_from(User)) or 0
-    stmt = _apply_paging(select(User), page, page_size)
+    # api.md 示例按 submit_count 降序排列（100 / 90 / 80）；并列时按 user_id 升序保证翻页稳定
+    submit_cnt = (
+        select(func.count(Submission.id))
+        .where(Submission.user_id == User.id)
+        .correlate(User)
+        .scalar_subquery()
+    )
+    stmt = _apply_paging(select(User).order_by(submit_cnt.desc(), User.id), page, page_size)
     users = (await db.scalars(stmt)).all()
     return ok({"total": total, "users": [await user_detail(db, u) for u in users]})
 

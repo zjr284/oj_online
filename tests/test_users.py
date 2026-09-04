@@ -350,6 +350,25 @@ async def test_list_users_shape_and_pagination(client):
     assert all_names == {"admin", "alice", "bob", "carol"}
 
 
+async def test_list_users_sorted_by_submit_count(client):
+    # api.md 示例：用户列表按 submit_count 降序（100 / 90 / 80）
+    await login(client, "admin", "admintestpassword")
+    await _setup_users(client)                       # alice=2, bob=3, carol=4
+    async with SessionLocal() as db:
+        db.add_all([
+            Submission(user_id=3, problem_id="p1", language="python", code="x", status="success"),
+            Submission(user_id=3, problem_id="p2", language="python", code="x", status="success"),
+            Submission(user_id=4, problem_id="p1", language="python", code="x", status="success"),
+        ])
+        await db.commit()
+
+    data = (await client.get("/api/users/")).json()["data"]
+    counts = [(u["username"], u["submit_count"]) for u in data["users"]]
+    assert [c for _, c in counts] == sorted([c for _, c in counts], reverse=True)  # 降序
+    assert counts[0] == ("bob", 2)
+    assert counts[1] == ("carol", 1)
+
+
 async def test_list_users_invalid_pagination(client):
     await login(client, "admin", "admintestpassword")
     # 仅 page → 400；非法值（0 / 负数 / 非数字）→ 400

@@ -91,7 +91,7 @@ def render_sidebar() -> str:
         if me:
             st.markdown(f"**{me.get('username')}**　{'🔑 管理员' if me.get('role') == 'admin' else '👤 用户'}")
             st.divider()
-            pages = ["📋 题目", "🚀 提交评测", "📜 评测记录", "🙍 个人主页"]
+            pages = ["📋 题目", "🚀 提交评测", "📜 评测记录", "🙍 个人主页", "✨ AI 命题"]
             if me.get("role") == "admin":
                 pages.append("🛠 用户管理")
             nav = st.session_state.get("nav")
@@ -361,6 +361,25 @@ def _problem_detail():
             if b.button("取消", width="stretch"):
                 st.session_state.pop("confirm_delete", None)
                 st.rerun()
+
+        # Step 5：配置日志可见性（PUT /api/problems/{id}/log_visibility）
+        st.divider()
+        cpub, cbtn = st.columns([4, 1])
+        public = cpub.checkbox(
+            "测试点明细对所有登录用户公开（public_cases）",
+            value=bool(p.get("public_cases", False)),
+        )
+        if cbtn.button("保存可见性", width="stretch"):
+            if public == bool(p.get("public_cases", False)):
+                st.info("未发生变化。")
+            else:
+                try:
+                    api("PUT", f"/api/problems/{pid}/log_visibility", json={"public_cases": public})
+                    st.success("已更新测试点可见性。")
+                    time.sleep(0.4)
+                    st.rerun()
+                except ApiError as e:
+                    friendly_error(e)
 
 
 def _problem_form():
@@ -678,6 +697,254 @@ def _render_submission(s: dict, show_log: bool):
                 st.dataframe(pd.DataFrame(details), width="stretch", hide_index=True)
             elif not details and status in ("success", "error"):
                 st.caption("该题测试点未公开，暂无明细。")
+
+
+# ---------- Advance：AI 智能命题 ----------
+
+def _ai_usage_panel(usage: dict):
+    """R4：Token 用量与费用展示，附计价依据说明（advance.md 要求透明）。"""
+    if not usage:
+        return
+    c1, c2, c3 = st.columns(3)
+    c1.metric("输入 Token", usage.get("input_tokens", "—"))
+    c2.metric("输出 Token", usage.get("output_tokens", "—"))
+    c3.metric("总 Token", usage.get("total_tokens", "—"))
+    cost = usage.get("cost")
+    c4, c5, c6 = st.columns(3)
+    c4.metric("费用", f"{cost} {usage.get('currency', '')}" if cost is not None else "—")
+    c5.metric("计价依据", {"provider": "接口返回", "config": "手动配置", "unknown": "未配置"}.get(usage.get("price_source"), "—"))
+    c6.metric("用量来源", "字符估算" if usage.get("estimated") else "接口返回")
+    notes = {
+        "provider": "费用由模型接口直接返回。",
+        "config": f"费用 = 输入Token/{usage.get('price_unit')} × {usage.get('input_price')}"
+                  f" + 输出Token/{usage.get('price_unit')} × {usage.get('output_price')}（{usage.get('currency')}）。",
+        "unknown": "未填写输入/输出价格，无法自动计算费用；可在模型配置中填写价格（不同模型、不同时段价格可能不同）。",
+    }
+    st.caption(f"计价依据：{notes.get(usage.get('price_source'), '—')}"
+               f"{'；模型接口未返回 Token 用量，按字符数/4 估算。' if usage.get('estimated') else ''}")
+
+
+def _render_ai_result(result: dict, problem_id: str | None):
+    """R1：生成结果预览 + 经已有题目接口导入题库（与基础功能衔接）。"""
+    st.divider()
+    st.subheader(f"生成的题目：{result.get('title', '')}（{result.get('id', '')}）")
+    meta = f"难度 {result.get('difficulty') or '—'} · 时间限制 {result.get('time_limit')}s" \
+           f" · 内存限制 {result.get('memory_limit')}MB"
+    if result.get("tags"):
+        meta += " · " + " ".join(f"`{t}`" for t in result["tags"])
+    st.caption(meta)
+    tab_desc, tab_samples, tab_cases = st.tabs(["题目描述", "样例", "测试点"])
+    with tab_desc:
+        st.markdown(result.get("description") or "—")
+        st.markdown("#### 输入格式")
+        st.markdown(result.get("input_description") or "—")
+        st.markdown("#### 输出格式")
+        st.markdown(result.get("output_description") or "—")
+        if result.get("constraints"):
+            st.markdown("#### 数据范围")
+            st.markdown(result["constraints"])
+    with tab_samples:
+        for i, s in enumerate(result.get("samples") or []):
+            c1, c2 = st.columns(2)
+            c1.markdown(f"**样例 {i + 1} · 输入**")
+            c1.code(s.get("input", ""))
+            c2.markdown(f"**样例 {i + 1} · 输出**")
+            c2.code(s.get("output", ""))
+    with tab_cases:
+        st.caption(f"共 {len(result.get('testcases') or [])} 个测试点")
+        for t in result.get("testcases") or []:
+            st.markdown(f"**#{t.get('id', '?')}** · 输入 {len(t.get('input', ''))} 字符 · 输出 {len(t.get('output', ''))} 字符")
+
+    label = f"💾 保存修改到 {problem_id}" if problem_id else "💾 保存为新题目"
+    if st.button(label, type="primary", width="stretch"):
+        try:
+            if problem_id:
+                api("PUT", f"/api/problems/{problem_id}", json=result)
+                st.success(f"已保存修改到题目 {problem_id}。")
+            else:
+                new_id = api("POST", "/api/problems/", json=result)["id"]
+                st.success(f"已保存为新题目 {new_id}。")
+            st.session_state["prob_id"] = problem_id or result.get("id")
+            st.session_state["prob_view"] = "detail"
+            st.session_state["nav"] = "📋 题目"
+            time.sleep(0.4)
+            st.rerun()
+        except ApiError as e:
+            friendly_error(e)
+
+
+def _ai_task_detail():
+    tid = st.session_state.get("ai_task_id")
+    if st.button("← 返回 AI 命题页"):
+        st.session_state["ai_view"] = "home"
+        st.rerun()
+    try:
+        d = api("GET", f"/api/ai/problem-tasks/{tid}")
+    except ApiError as e:
+        friendly_error(e)
+        return
+    status = d.get("status", "pending")
+    badge = {"pending": "⏳ 等待中", "running": "🔄 执行中", "done": "✅ 完成",
+             "cancelled": "🛑 已中断", "failed": "❌ 失败"}.get(status, status)
+    st.title(f"AI 命题任务 #{tid}")
+    st.caption(" · ".join(x for x in (
+        d.get("requirement", ""), f"改编自 {d['problem_id']}" if d.get("problem_id") else "",
+        f"模型 {d.get('model') or '—'}", f"创建于 {d.get('created_at') or '—'}") if x))
+    st.markdown(f"### {badge}")
+    st.progress(min(float(d.get("progress") or 0), 1.0))
+
+    if status in ("pending", "running"):
+        # 每秒自动刷新实现实时进度（R3）；页面不阻塞，「中断任务」可随时点击
+        st.markdown('<meta http-equiv="refresh" content="1">', unsafe_allow_html=True)
+        st.caption("页面每秒自动刷新，可实时查看进度；中断任务会真正终止后台执行。")
+        if st.button("🛑 中断任务", width="stretch"):
+            try:
+                api("PUT", f"/api/ai/problem-tasks/{tid}/cancel")
+                st.success("任务已中断，后台执行已终止。")
+                time.sleep(0.3)
+                st.rerun()
+            except ApiError as e:
+                friendly_error(e)
+        return
+
+    if status == "done" and d.get("result"):
+        _render_ai_result(d["result"], d.get("problem_id"))
+    elif status == "failed":
+        st.error((d.get("result") or {}).get("error") or "未知错误")
+    elif status == "cancelled":
+        st.info("任务已中断，后台执行已终止，可返回 AI 命题页重新创建任务。")
+    _ai_usage_panel(d.get("usage"))
+
+
+def page_ai():
+    if "ai_view" not in st.session_state:
+        st.session_state["ai_view"] = "home"
+    if st.session_state["ai_view"] == "task":
+        _ai_task_detail()
+    else:
+        _ai_home()
+
+
+def _ai_home():
+    st.title("✨ AI 智能命题")
+    st.caption("配置大模型后，输入命题需求即可自动生成符合题库规范的题目，实时查看进度并可导入题库。")
+
+    # R2：模型配置（密钥加密存储，保存后不回显）
+    cfg = {}
+    try:
+        cfg = api("GET", "/api/ai/model-config") or {}
+    except ApiError:
+        pass   # 未配置也可打开页面
+    with st.expander("⚙️ 模型配置", expanded=not cfg.get("api_key_configured")):
+        if cfg.get("api_key_configured"):
+            st.caption(f"当前模型：{cfg.get('model')}（{cfg.get('provider_url')}）· 密钥已配置（出于安全不回显）")
+        else:
+            st.caption("尚未配置模型。密钥加密存储，任何接口都不会回显。")
+        with st.form("ai-config-form"):
+            provider_url = st.text_input("提供商 URL（OpenAI 兼容 chat/completions 完整接口地址）",
+                                         value=cfg.get("provider_url", ""))
+            model = st.text_input("模型名称", value=cfg.get("model", ""))
+            api_key = st.text_input("模型密钥", type="password",
+                                    help="仅加密存储；保存后不回显，修改配置时需重新填写")
+            c1, c2 = st.columns(2)
+            input_price = c1.text_input("输入价格（元/计价单位，可选）",
+                                        value=str(cfg["input_price"]) if cfg.get("input_price") is not None else "")
+            output_price = c2.text_input("输出价格（元/计价单位，可选）",
+                                         value=str(cfg["output_price"]) if cfg.get("output_price") is not None else "")
+            price_unit = st.text_input("计价单位（Token 数）", value=str(cfg.get("price_unit") or 1000000))
+            st.caption("⚠ 不同模型、不同时段的计费价格可能不同（部分厂商设有错峰优惠时段），请按实际调用时段的官方价格填写。")
+            if st.form_submit_button("保存配置", width="stretch"):
+                errors = []
+                if not provider_url.strip():
+                    errors.append("提供商 URL 不能为空。")
+                if not model.strip():
+                    errors.append("模型名称不能为空。")
+                if not api_key:
+                    errors.append("模型密钥不能为空。")
+                prices = {}
+                for name, text in (("input_price", input_price), ("output_price", output_price)):
+                    if text.strip():
+                        try:
+                            v = float(text.strip())
+                            if v < 0:
+                                raise ValueError
+                            prices[name] = v
+                        except ValueError:
+                            errors.append(f"{name} 必须是非负数字。")
+                    else:
+                        prices[name] = None
+                try:
+                    unit = int(price_unit.strip())
+                    if unit < 1:
+                        raise ValueError
+                except ValueError:
+                    errors.append("计价单位必须是正整数。")
+                if errors:
+                    for e in errors:
+                        st.error(e)
+                else:
+                    try:
+                        api("PUT", "/api/ai/model-config", json={
+                            "provider_url": provider_url.strip(), "model": model.strip(),
+                            "api_key": api_key, "price_unit": unit, **prices,
+                        })
+                        st.success("模型配置已保存。")
+                        time.sleep(0.4)
+                        st.rerun()
+                    except ApiError as e:
+                        friendly_error(e)
+
+    # 新建命题任务
+    st.subheader("新建命题任务")
+    problems = []
+    try:
+        problems = api("GET", "/api/problems/")
+    except ApiError:
+        pass
+    with st.form("ai-task-form"):
+        requirement = st.text_area("命题需求", height=120,
+                                   placeholder="例如：出一道考查二分查找的题目，难度中等，n ≤ 10^6，包含边界测试点")
+        pid = st.selectbox("参考/改编题目（可选）", [""] + [p["id"] for p in problems],
+                           format_func=lambda x: x or "— 新题目 —")
+        if st.form_submit_button("✨ 创建命题任务", width="stretch"):
+            if not requirement.strip():
+                st.error("命题需求不能为空。")
+            else:
+                try:
+                    resp = api("POST", "/api/ai/problem-tasks/", json={
+                        "requirement": requirement.strip(),
+                        "problem_id": pid or None,
+                    })
+                    st.session_state["ai_task_id"] = resp["task_id"]
+                    st.session_state["ai_view"] = "task"
+                    st.success("任务已创建，开始生成…")
+                    time.sleep(0.4)
+                    st.rerun()
+                except ApiError as e:
+                    friendly_error(e)
+
+    # 任务记录
+    st.subheader("任务记录")
+    tasks = []
+    try:
+        tasks = api("GET", "/api/ai/problem-tasks/") or []
+    except ApiError:
+        pass
+    if not tasks:
+        st.info("暂无任务，创建第一个命题任务吧。")
+        return
+    st.dataframe(pd.DataFrame([
+        {"ID": t.get("task_id"), "状态": {"pending": "等待中", "running": "执行中", "done": "完成",
+                                         "cancelled": "已中断", "failed": "失败"}.get(t.get("status"), t.get("status")),
+         "进度": f"{round((t.get('progress') or 0) * 100)}%", "模型": t.get("model", "—"),
+         "创建时间": t.get("created_at", "—")}
+        for t in tasks
+    ]), width="stretch", hide_index=True)
+    sel = st.selectbox("查看任务详情", [t["task_id"] for t in tasks], format_func=lambda x: f"#{x}")
+    if st.button("打开详情"):
+        st.session_state["ai_task_id"] = sel
+        st.session_state["ai_view"] = "task"
+        st.rerun()
 
 
 # ---------- 入口 ----------
