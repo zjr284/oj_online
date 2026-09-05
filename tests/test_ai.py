@@ -206,18 +206,24 @@ async def test_task_list_and_permissions(client, monkeypatch):
     await client.post("/api/users/", json={"username": "carol", "password": "pw123456"})
     _mock_model(monkeypatch)
 
-    # 普通用户不能使用任何 AI 命题接口。
+    # 普通用户可以创建并查看自己的任务。
     await login(client, "bob", "pw123456")
-    assert (await client.get("/api/ai/model-config")).status_code == 403
-    assert (await client.put("/api/ai/model-config", json=CONFIG)).status_code == 403
-    assert (await client.post("/api/ai/problem-tasks/", json={"requirement": "出一道题"})).status_code == 403
-    assert (await client.get("/api/ai/problem-tasks/")).status_code == 403
-
-    # 管理员可以创建并查看任务；列表不含 result。
-    await login(client, "admin", "admintestpassword")
+    assert (await client.get("/api/ai/model-config")).status_code == 200
     resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "出一道题"})
     tid = resp.json()["data"]["task_id"]
     await _wait_task(client, tid)
+    resp = await client.get("/api/ai/problem-tasks/")
+    assert [task["task_id"] for task in resp.json()["data"]] == [tid]
+    assert "result" not in resp.json()["data"][0]
+
+    # 其他普通用户不能查看或取消该任务。
+    await login(client, "carol", "pw123456")
+    assert (await client.get(f"/api/ai/problem-tasks/{tid}")).status_code == 403
+    assert (await client.put(f"/api/ai/problem-tasks/{tid}/cancel")).status_code == 403
+    assert (await client.get("/api/ai/problem-tasks/")).json()["data"] == []
+
+    # 管理员可以查看全部任务。
+    await login(client, "admin", "admintestpassword")
     assert (await client.get(f"/api/ai/problem-tasks/{tid}")).status_code == 200
     resp = await client.get("/api/ai/problem-tasks/")
     assert len(resp.json()["data"]) == 1

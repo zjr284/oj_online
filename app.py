@@ -3,7 +3,7 @@
 运行：streamlit run app.py（后端需已在 8000 端口运行，可用 OJ_API_BASE 环境变量指向其它地址）
 
 要求（step6.md）：
-- Step 2 扩展入口：查询语言列表、管理员动态注册语言
+- Step 2 扩展入口：查询语言列表、登录用户动态注册语言
 - 任务 1 用户页面组：注册/登录/退出、用户信息展示、用户管理（仅管理员）
 - 任务 2 题目页面组：列表/详情/新增/编辑/删除，表单提交前做格式检查
 - 任务 3 评测与提交页面组：题目详情内嵌代码提交（力扣式双栏）、提交记录列表/详情、轮询评测状态、明确展示 CE/RE/TLE 等
@@ -87,9 +87,9 @@ def _restore_route() -> None:
     me = st.session_state.get("me")
     if not me:
         return
-    allowed = ["📋 题目", "📜 评测记录", "🙍 个人主页"]
+    allowed = ["📋 题目", "📜 评测记录", "🧩 语言管理", "✨ AI 命题", "🙍 个人主页"]
     if me.get("role") == "admin":
-        allowed += ["🧩 语言管理", "✨ AI 命题", "🛠 用户管理", "🛡 访问审计"]
+        allowed += ["🛠 用户管理", "🛡 访问审计"]
     has_url_route = bool(st.query_params.get("page"))
     requested = ROUTE_PAGES.get(st.query_params.get("page", ""))
     page = requested if requested in allowed else st.session_state.get("nav")
@@ -509,9 +509,9 @@ def render_sidebar() -> str:
                 unsafe_allow_html=True,
             )
             st.divider()
-            pages = ["📋 题目", "📜 评测记录", "🙍 个人主页"]
+            pages = ["📋 题目", "📜 评测记录", "🧩 语言管理", "✨ AI 命题", "🙍 个人主页"]
             if me.get("role") == "admin":
-                pages += ["🧩 语言管理", "✨ AI 命题", "🛠 用户管理", "🛡 访问审计"]
+                pages += ["🛠 用户管理", "🛡 访问审计"]
             # 导航用 key 直接绑定 session_state，只播种默认值一次；
             # 不要每次 rerun 传 index=旧值——会覆盖用户刚点击的选项，导致需双击才能切页。
             if st.session_state.get("nav") not in pages:
@@ -693,7 +693,7 @@ def page_admin_users():
 
 
 def page_languages():
-    """管理员维护评测语言注册表。"""
+    """登录用户查询并维护评测语言注册表。"""
     st.title("🧩 语言管理")
     st.caption("评测器根据这里的配置自动选择源码扩展名、编译命令和运行命令。")
 
@@ -842,14 +842,22 @@ def _problem_list():
     if not problems:
         st.info("暂无题目，点击上方按钮创建第一道题。")
         return
-    # 洛谷题单风格列表（列表接口仅返回 id/title）
-    rows = "".join(
-        f"<tr><td class='oj-mono'>{html.escape(str(p['id']))}</td>"
-        f"<td><a class='oj-problem-link' target='_self' "
-        f"href='{html.escape(_route_href('problems', problem=p['id']), quote=True)}'>"
-        f"{html.escape(p['title'])}</a></td></tr>"
-        for p in problems)
-    st.markdown(_html_table(["题目 ID", "标题"], rows), unsafe_allow_html=True)
+    # 题名本身就是详情入口。使用 Streamlit 原生按钮在当前会话内切换，
+    # 避免普通 HTML 链接整页重载时丢失刚建立的登录状态。
+    head_id, head_title = st.columns([1, 6])
+    head_id.markdown("**题目 ID**")
+    head_title.markdown("**标题（点击进入详情）**")
+    for problem in problems:
+        id_col, title_col = st.columns([1, 6])
+        id_col.markdown(f"<span class='oj-mono'>{html.escape(str(problem['id']))}</span>",
+                        unsafe_allow_html=True)
+        if title_col.button(
+            problem["title"], key=f"problem-title-{problem['id']}", type="tertiary",
+        ):
+            st.session_state["prob_id"] = str(problem["id"])
+            st.session_state["prob_view"] = "detail"
+            _set_route("problems", problem=problem["id"])
+            st.rerun()
 
 
 def _problem_detail():
@@ -926,18 +934,23 @@ def _problem_detail():
 
         # Step 5：配置日志可见性（PUT /api/problems/{id}/log_visibility）
         st.divider()
-        cpub, cbtn = st.columns([4, 1])
-        public = cpub.checkbox(
-            "测试点明细对所有登录用户公开（public_cases）",
-            value=bool(p.get("public_cases", False)),
+        st.subheader("⚙️ 日志详情查看权限")
+        st.caption("只有管理员可以修改。设置为公开后，所有已登录用户都能查看本题的测试点日志详情。")
+        public = st.radio(
+            "谁可以查看日志详情",
+            [False, True],
+            index=1 if p.get("public_cases", False) else 0,
+            format_func=lambda value: "所有已登录用户" if value else "仅提交者和管理员",
+            horizontal=True,
+            key=f"log-visibility-{pid}",
         )
-        if cbtn.button("保存可见性", width="stretch"):
+        if st.button("保存日志权限设置", type="primary"):
             if public == bool(p.get("public_cases", False)):
                 st.info("未发生变化。")
             else:
                 try:
                     api("PUT", f"/api/problems/{pid}/log_visibility", json={"public_cases": public})
-                    st.success("已更新测试点可见性。")
+                    st.success("已更新日志详情查看权限。")
                     time.sleep(0.4)
                     st.rerun()
                 except ApiError as e:

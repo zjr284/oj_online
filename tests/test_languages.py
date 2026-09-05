@@ -66,12 +66,12 @@ async def test_register_requires_login(client):
     assert resp.json() == {"code": 401, "msg": "not logged in", "data": None}
 
 
-async def test_regular_logged_in_user_cannot_register(client):
+async def test_regular_logged_in_user_can_register(client):
     await client.post("/api/users/", json={"username": "alice", "password": "secret1"})
     await login(client, "alice", "secret1")
     resp = await client.post("/api/languages/", json=BASE)
-    assert resp.status_code == 403
-    assert (await client.get("/api/languages/")).json()["data"]["name"] == []
+    assert resp.status_code == 200
+    assert (await client.get("/api/languages/")).json()["data"]["name"] == ["go"]
 
 
 async def test_register_banned_user_forbidden(client):

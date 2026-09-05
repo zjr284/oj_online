@@ -3,8 +3,7 @@
 语言以数据库记录注册（languages 表），评测时动态读取——
 这正是「动态注册语言」的评分依据。判题执行部分见 app/judge/。
 
-权限说明：语言配置会决定服务端执行的命令，因此仅管理员可以注册；
-未登录返回 401，普通用户返回 403。
+权限说明：所有已登录用户均可动态注册语言；未登录返回 401。
 """
 from app.core.routing import AuthenticatedRoute
 
@@ -16,7 +15,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import require_admin
+from app.core.deps import get_current_user
 from app.core.errors import ApiError, ok
 from app.database import get_db
 from app.models import Language, User
@@ -61,7 +60,7 @@ async def list_languages(db: AsyncSession = Depends(get_db)):
 
 @router.post("/")
 async def register_language(
-    body: LanguageIn, db: AsyncSession = Depends(get_db), admin: User = Depends(require_admin)
+    body: LanguageIn, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)
 ):
     _validate_cmd(body)
     if await db.get(Language, body.name) is not None:

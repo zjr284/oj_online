@@ -90,8 +90,8 @@ def test_sidebar_nav_switches_page_on_single_click(monkeypatch):
     assert at.session_state["nav"] == "🙍 个人主页"
 
 
-def test_ai_page_is_admin_only_and_renders(monkeypatch):
-    """普通用户看不到 AI 命题入口，管理员页面配置和任务表单齐全。
+def test_ai_and_language_pages_are_available_to_regular_users(monkeypatch):
+    """普通用户可以进入 AI 命题和语言管理页面。
 
     后端未启动时页面仍可渲染（页面内对后端调用均容错）；
     OJ_API_BASE 指向死端口隔离真实后端。
@@ -101,12 +101,8 @@ def test_ai_page_is_admin_only_and_renders(monkeypatch):
     at.session_state["me"] = {"username": "alice", "user_id": "2", "role": "user"}
     at.run()
     assert not at.exception
-    assert "✨ AI 命题" not in list(at.radio[0].options)
-    assert "🧩 语言管理" not in list(at.radio[0].options)
-
-    at = AppTest.from_file(APP, default_timeout=30)
-    at.session_state["me"] = {"username": "root", "user_id": "1", "role": "admin"}
-    at.run()
+    assert "✨ AI 命题" in list(at.radio[0].options)
+    assert "🧩 语言管理" in list(at.radio[0].options)
     at.radio[0].set_value("✨ AI 命题").run()
     assert not at.exception
     texts = (" ".join(str(md.value) for md in at.markdown)
@@ -188,11 +184,11 @@ def _fake_api(monkeypatch, state):
     monkeypatch.setattr(httpx, 'request', request)
 
 
-def test_language_page_lists_and_registers_for_admin(monkeypatch):
+def test_language_page_lists_and_registers_for_regular_user(monkeypatch):
     state = {'languages': ['python', 'cpp']}
     _fake_api(monkeypatch, state)
     at = AppTest.from_file(APP, default_timeout=30)
-    at.session_state['me'] = {'username': 'root', 'user_id': '1', 'role': 'admin'}
+    at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
     at.session_state['nav'] = '🧩 语言管理'
     at.run()
 
@@ -235,10 +231,36 @@ def test_problem_title_is_the_detail_link(monkeypatch):
     at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
     at.run()
 
-    table_html = ' '.join(str(md.value) for md in at.markdown)
-    assert "href='?page=problems&amp;problem=1001'" in table_html
-    assert '>A + B Problem</a>' in table_html
+    title_button = next(button for button in at.button if button.label == 'A + B Problem')
+    title_button.click().run()
+    assert at.session_state['me']['username'] == 'alice'
+    assert at.session_state['prob_view'] == 'detail'
+    assert at.session_state['prob_id'] == '1001'
+    route_problem = at.query_params['problem']
+    assert route_problem == '1001' or route_problem == ['1001']
     assert not any(button.label in ('查看题目详情', '打开详情') for button in at.button)
+
+
+def test_only_admin_can_set_problem_log_visibility(monkeypatch):
+    state = {}
+    _fake_api(monkeypatch, state)
+
+    user_app = AppTest.from_file(APP, default_timeout=30)
+    user_app.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
+    user_app.query_params.update({'page': 'problems', 'problem': '1001'})
+    user_app.run()
+    assert not any(radio.label == '谁可以查看日志详情' for radio in user_app.radio)
+
+    admin_app = AppTest.from_file(APP, default_timeout=30)
+    admin_app.session_state['me'] = {'username': 'root', 'user_id': '1', 'role': 'admin'}
+    admin_app.query_params.update({'page': 'problems', 'problem': '1001'})
+    admin_app.run()
+    setting = next(radio for radio in admin_app.radio if radio.label == '谁可以查看日志详情')
+    setting.set_value(True).run()
+    next(button for button in admin_app.button if button.label == '保存日志权限设置').click().run()
+    request = next(item for item in state['requests']
+                   if item[0] == 'PUT' and item[1] == '/api/problems/1001/log_visibility')
+    assert request[2] == {'public_cases': True}
 
 
 def test_url_route_restores_previous_interface(monkeypatch):
@@ -264,6 +286,13 @@ def test_url_route_restores_previous_interface(monkeypatch):
     at.run()
     assert at.session_state['nav'] == '🙍 个人主页'
     assert any(str(title.value) == '🙍 个人主页' for title in at.title)
+
+
+def test_browser_history_bridge_preserves_streamlit_session():
+    """浏览器返回时应在当前 Streamlit 会话中 rerun，不得整页刷新丢失登录态。"""
+    component = (Path(APP).parent / 'app' / 'static' / 'session_cookie' / 'index.html').read_text()
+    assert 'type: "streamlit:setComponentValue"' in component
+    assert 'window.parent.location.reload()' not in component
 
 
 def test_profile_can_rename_current_user(monkeypatch):

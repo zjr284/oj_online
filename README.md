@@ -63,7 +63,7 @@ app/
 │   ├── problems.py      #   Step 1 题目 CRUD + Step 5 log_visibility ✅
 │   ├── auth.py          #   Step 4 登录/登出 ✅
 │   ├── users.py         #   Step 4 注册/角色/用户查询/操作日志 ✅
-│   ├── languages.py     #   Step 2 语言注册表（管理员可注册） ✅
+│   ├── languages.py     #   Step 2 语言注册表（登录用户可注册） ✅
 │   ├── submissions.py   #   Step 3 提交/列表/详情/rejudge/限流 + Step 5 log ✅
 │   ├── logs.py          #   Step 5 访问审计 ✅
 │   ├── maintenance.py   #   测试辅助 /api/reset/ ✅
@@ -97,7 +97,7 @@ models   →  数据结构（ORM / 文件）
    输出逐行比对（忽略行尾空白与末尾空行）→ AC/WA；
 3. 每个测试点 10 分，`score = AC 数 × 10`。
 
-内置语言为 Python 3 和 C++14。管理员可在前端“语言管理”页面查询、注册语言；后端对应
+内置语言为 Python 3 和 C++14。所有登录用户都可在前端“语言管理”页面查询、注册语言；后端对应
 `GET /api/languages/` 和 `POST /api/languages/`。语言配置保存在数据库中，提交时按 `language` 字段
 读取 `file_ext`、`compile_cmd`、`run_cmd` 及默认资源限制，因此新增配置可以立即参与评测。
 

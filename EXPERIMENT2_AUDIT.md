@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | [总览](https://dbg-course.github.io/python-docs/oj/) | FastAPI 异步接口、模块范围 | 所有业务路由使用 async def；文件、bcrypt、进程执行均移出事件循环 |
 | [Step 1](https://dbg-course.github.io/python-docs/oj/project/step1/) | 题目文件、必填/选填字段、CRUD | 已覆盖；题目统一使用数字 ID，并补充旧数据迁移、存储层路径校验、原子更新和编辑时公开策略保护 |
-| [Step 2](https://dbg-course.github.io/python-docs/oj/project/step2/) | Python/C++、语言注册、输出比对、资源限制 | 已覆盖；内置 C++14 配置可真实编译运行，管理员可通过 API 和前端动态注册语言，登录用户可查询列表；修复限制优先级、正常判题状态、编译信息、子进程和输出清理 |
+| [Step 2](https://dbg-course.github.io/python-docs/oj/project/step2/) | Python/C++、语言注册、输出比对、资源限制 | 已覆盖；内置 C++14 配置可真实编译运行，所有登录用户可通过 API 和前端动态注册语言并查询列表；修复限制优先级、正常判题状态、编译信息、子进程和输出清理 |
 | [Step 3](https://dbg-course.github.io/python-docs/oj/project/step3/) | 查询、分页/筛选、详情、重判 | 已覆盖；重判清空总分和明细，等待旧任务退出，防止旧回调移除新任务 |
 | [Step 4](https://dbg-course.github.io/python-docs/oj/project/step4/) | 管理员初始化、注册、会话、权限、用户统计 | 已覆盖；支持用户修改本人用户名，并修复过期会话登出、长密码截断碰撞和已解决题目统计 |
 | [Step 5](https://dbg-course.github.io/python-docs/oj/project/step5/) | 明细裁剪、管理员公开策略、访问审计 | 已覆盖；阻止普通用户借编辑题目越权公开；删除题目后保留历史日志，默认撤销公开访问 |
@@ -41,7 +41,7 @@
 - 所有数据库和文件测试使用 `/tmp` 独立目录；测试不重置工作区实际数据，不调用付费模型。
 - `python -m compileall` 和 `git diff --check` 检查语法与补丁格式。
 
-最终结果：完整回归 **264 passed**（265.13 秒），语法编译和补丁格式检查通过。回归中包含实际题库验证，
+最终结果：完整回归 **265 passed**（261.24 秒），语法编译和补丁格式检查通过。回归中包含实际题库验证，
 涵盖三个随仓库发布的题目的全部样例/测试点，
 以及 n=200000、q=50000 时 Python 二分 AC、C++14 二分 AC、Python 线性扫描 TLE。
 
