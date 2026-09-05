@@ -1,5 +1,5 @@
 {
-  "id": "sum_2",
+  "id": "1002",
   "title": "两数之和",
   "description": "输入两个整数 a 和 b，输出它们的和。",
   "input_description": "一行两个整数 a, b，用空格分隔。",

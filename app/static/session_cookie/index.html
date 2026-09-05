@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>session cookie</title></head>
+<body style="margin:0;height:0;overflow:hidden">
+<script>
+const COOKIE_NAME = "oj_session";
+
+function notifyReady() {
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type: "streamlit:componentReady",
+    apiVersion: 1
+  }, "*");
+}
+
+function setHeight() {
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type: "streamlit:setFrameHeight",
+    height: 0
+  }, "*");
+}
+
+function installHistoryListener() {
+  // Streamlit 会把 query_params 写入浏览器历史，但 popstate 本身不会触发
+  // Python 脚本重跑。返回/前进时刷新父页面，由 app.py 按历史 URL 恢复界面。
+  try {
+    if (window.parent.__ojHistoryListener) {
+      window.parent.removeEventListener("popstate", window.parent.__ojHistoryListener);
+    }
+    window.parent.__ojHistoryListener = () => window.parent.location.reload();
+    window.parent.addEventListener("popstate", window.parent.__ojHistoryListener);
+  } catch (_) {
+    // 若宿主改变 iframe 隔离策略，Cookie 同步仍可独立工作。
+  }
+}
+
+window.addEventListener("message", (event) => {
+  if (!event.data || event.data.type !== "streamlit:render") return;
+  const args = event.data.args || {};
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  if (args.token) {
+    document.cookie = `${COOKIE_NAME}=${encodeURIComponent(args.token)}; Path=/; Max-Age=${Number(args.max_age) || 0}; SameSite=Strict${secure}`;
+  } else {
+    document.cookie = `${COOKIE_NAME}=; Path=/; Max-Age=0; SameSite=Strict${secure}`;
+  }
+  setHeight();
+});
+
+notifyReady();
+setHeight();
+installHistoryListener();
+</script>
+</body>
+</html>

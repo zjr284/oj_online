@@ -36,6 +36,21 @@ async def test_register_login_logout(client):
     assert resp.status_code == 401
 
 
+async def test_current_session_restores_logged_in_user(client):
+    """浏览器刷新后可用持久会话 Cookie 恢复身份。"""
+    assert (await client.get("/api/auth/me")).status_code == 401
+    await client.post("/api/users/", json={"username": "alice", "password": "secret1"})
+    await login(client, "alice", "secret1")
+
+    resp = await client.get("/api/auth/me")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "code": 200,
+        "msg": "success",
+        "data": {"user_id": "2", "username": "alice", "role": "user"},
+    }
+
+
 async def test_admin_role_management(client):
     await login(client, "admin", "admintestpassword")
     await client.post("/api/users/", json={"username": "carol", "password": "secret2"})

@@ -14,8 +14,8 @@ from app.core.deps import get_current_user, require_admin
 from app.core.errors import ApiError, ok
 from app.database import get_db
 from app.models import RoleChangeLog, Submission, User
-from app.schemas.user import RegisterIn, RoleIn
-from app.services.user_service import create_user, user_detail, user_public
+from app.schemas.user import RegisterIn, RoleIn, UsernameIn
+from app.services.user_service import create_user, rename_user, user_detail, user_public
 
 router = APIRouter(route_class=AuthenticatedRoute, prefix="/api/users", tags=["users"])
 
@@ -92,3 +92,17 @@ async def change_role(
     user.role = body.role
     await db.commit()
     return ok({"user_id": str(user_id), "role": body.role}, msg="role updated")
+
+
+@router.put("/{user_id}/username")
+async def change_username(
+    body: UsernameIn,
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    me: User = Depends(get_current_user),
+):
+    """用户修改自己的用户名。管理员也只能通过本接口修改本人。"""
+    if me.id != user_id:
+        raise ApiError(403, "permission denied")
+    user = await rename_user(db, me, body.username.strip())
+    return ok({"user_id": str(user.id), "username": user.username}, msg="username updated")

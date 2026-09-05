@@ -12,13 +12,13 @@ from scripts.build_find_range_stress import build_stress_problem
 ROOT = Path(__file__).resolve().parent.parent
 
 
-@pytest.mark.parametrize('problem_id', ['P1001', 'sum_2', 'find_range'])
+@pytest.mark.parametrize('problem_id', ['1001', '1002', '1003'])
 def test_shipped_problem_samples_and_cases(problem_id):
     problem = ProblemConfig.model_validate_json(
         (ROOT / 'data/problems' / f'{problem_id}.json').read_text()).model_dump()
     for case in problem['samples'] + problem['testcases']:
         values = list(map(int, case['input'].split()))
-        if problem_id in ('P1001', 'sum_2'):
+        if problem_id in ('1001', '1002'):
             assert len(values) == 2
             assert all(-10**9 <= value <= 10**9 for value in values)
             answer = str(sum(values))

@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 def build_stress_problem(n=200_000, q=50_000):
     if not 2 <= n <= 1_000_000 or not 1 <= q <= 100_000:
         raise ValueError('require 2 <= n <= 1000000 and 1 <= q <= 100000')
-    problem = json.loads((ROOT / 'data/problems/find_range.json').read_text(encoding='utf-8'))
+    problem = json.loads((ROOT / 'data/problems/1003.json').read_text(encoding='utf-8'))
     # 中间缺失值迫使逐元素搜索检查整个数组，不能仅用首尾范围判断提前退出。
     middle = n // 2
     array = ' '.join(['6'] * middle + ['8'] * (n - middle))
@@ -38,7 +38,7 @@ def build_stress_problem(n=200_000, q=50_000):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output', type=Path, default=ROOT / 'data/generated/find_range.json')
+    parser.add_argument('--output', type=Path, default=ROOT / 'data/generated/1003.json')
     parser.add_argument('--n', type=int, default=200_000)
     parser.add_argument('--q', type=int, default=50_000)
     args = parser.parse_args()

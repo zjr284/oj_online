@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import config
-from app.core.deps import SESSION_COOKIE
+from app.core.deps import SESSION_COOKIE, get_current_user
 from app.core.errors import ApiError, ok
 from app.core.security import new_token, verify_password
 from app.database import get_db
@@ -16,6 +16,12 @@ from app.schemas.user import LoginIn
 from app.services.user_service import user_public
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+@router.get("/me")
+async def current_session(user: User = Depends(get_current_user)):
+    """用现有会话恢复当前用户信息，供前端刷新后恢复登录态。"""
+    return ok(user_public(user))
 
 
 @router.post("/login")

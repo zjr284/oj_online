@@ -90,8 +90,8 @@ def test_sidebar_nav_switches_page_on_single_click(monkeypatch):
     assert at.session_state["nav"] == "🙍 个人主页"
 
 
-def test_ai_page_renders_for_logged_in_user(monkeypatch):
-    """Advance R1：登录用户（含普通用户）可进入 AI 命题页，配置/任务表单齐全。
+def test_ai_page_is_admin_only_and_renders(monkeypatch):
+    """普通用户看不到 AI 命题入口，管理员页面配置和任务表单齐全。
 
     后端未启动时页面仍可渲染（页面内对后端调用均容错）；
     OJ_API_BASE 指向死端口隔离真实后端。
@@ -101,7 +101,12 @@ def test_ai_page_renders_for_logged_in_user(monkeypatch):
     at.session_state["me"] = {"username": "alice", "user_id": "2", "role": "user"}
     at.run()
     assert not at.exception
-    assert "✨ AI 命题" in list(at.radio[0].options)   # 所有登录用户可见（非管理员专属）
+    assert "✨ AI 命题" not in list(at.radio[0].options)
+    assert "🧩 语言管理" not in list(at.radio[0].options)
+
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["me"] = {"username": "root", "user_id": "1", "role": "admin"}
+    at.run()
     at.radio[0].set_value("✨ AI 命题").run()
     assert not at.exception
     texts = (" ".join(str(md.value) for md in at.markdown)
@@ -132,8 +137,34 @@ def _fake_api(monkeypatch, state):
         if path == '/api/auth/login':
             data = {'username': 'alice', 'user_id': '2', 'role': 'user'}
             headers = {'set-cookie': 'oj_session=private-session-token; HttpOnly; Path=/'}
+        elif path == '/api/auth/me':
+            data = {'username': state.get('username', 'alice'), 'user_id': '2', 'role': 'user'}
         elif path == '/api/problems/':
-            data = []
+            data = state.get('problems', [])
+        elif path == '/api/problems/1001':
+            data = {
+                'id': '1001', 'title': 'A + B Problem',
+                'description': '计算两个整数之和。',
+                'input_description': '两个整数。', 'output_description': '整数之和。',
+                'samples': [{'input': '1 2', 'output': '3'}],
+                'constraints': '整数范围内', 'testcases': [{'input': '1 2', 'output': '3'}],
+                'time_limit': 1, 'memory_limit': 64, 'tags': [],
+            }
+        elif path == '/api/users/2':
+            data = {
+                'user_id': '2', 'username': state.get('username', 'alice'), 'role': 'user',
+                'join_time': '2026-01-01', 'submit_count': 0, 'resolve_count': 0,
+            }
+        elif path == '/api/users/2/username' and method == 'PUT':
+            state['username'] = kwargs['json']['username']
+            data = {'user_id': '2', 'username': state['username']}
+        elif path == '/api/languages/':
+            languages = state.setdefault('languages', ['python', 'cpp'])
+            if method == 'POST':
+                languages.append(kwargs['json']['name'])
+                data = {'name': kwargs['json']['name']}
+            else:
+                data = {'name': languages}
         elif path == '/api/ai/problem-tasks/7/cancel':
             state['status'] = 'cancelled'
             data = {'task_id': 7, 'status': 'cancelled'}
@@ -157,6 +188,34 @@ def _fake_api(monkeypatch, state):
     monkeypatch.setattr(httpx, 'request', request)
 
 
+def test_language_page_lists_and_registers_for_admin(monkeypatch):
+    state = {'languages': ['python', 'cpp']}
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'root', 'user_id': '1', 'role': 'admin'}
+    at.session_state['nav'] = '🧩 语言管理'
+    at.run()
+
+    assert not at.exception
+    assert '🧩 语言管理' in list(at.radio[0].options)
+    assert any('当前支持的语言' in str(s.value) for s in at.subheader)
+    inputs = {item.label: item for item in at.text_input}
+    inputs['语言名称'].set_value('go')
+    inputs['源码扩展名'].set_value('.go')
+    inputs['编译命令（解释型语言可留空）'].set_value('go build -o {exe} {src}')
+    inputs['运行命令'].set_value('{exe}')
+    next(button for button in at.button if button.label == '注册语言').click().run()
+
+    assert not at.exception
+    assert state['languages'] == ['python', 'cpp', 'go']
+    request = next(item for item in state['requests']
+                   if item[0] == 'POST' and item[1] == '/api/languages/')
+    assert request[2] == {
+        'name': 'go', 'file_ext': '.go',
+        'compile_cmd': 'go build -o {exe} {src}', 'run_cmd': '{exe}',
+    }
+
+
 def test_successful_login_does_not_put_credentials_in_url(monkeypatch):
     _fake_api(monkeypatch, {})
     at = AppTest.from_file(APP, default_timeout=30).run()
@@ -169,11 +228,65 @@ def test_successful_login_does_not_put_credentials_in_url(monkeypatch):
     assert 'oj_s' not in at.query_params and 'oj_u' not in at.query_params
 
 
-def test_ai_progress_and_cancel_keep_current_page(monkeypatch):
+def test_problem_title_is_the_detail_link(monkeypatch):
+    state = {'problems': [{'id': '1001', 'title': 'A + B Problem'}]}
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
+    at.run()
+
+    table_html = ' '.join(str(md.value) for md in at.markdown)
+    assert "href='?page=problems&amp;problem=1001'" in table_html
+    assert '>A + B Problem</a>' in table_html
+    assert not any(button.label in ('查看题目详情', '打开详情') for button in at.button)
+
+
+def test_url_route_restores_previous_interface(monkeypatch):
+    """URL 是页面状态源，浏览器前进/后退后的 rerun 可恢复对应界面。"""
+    _fake_api(monkeypatch, {})
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
+    at.query_params['page'] = 'profile'
+    at.run()
+    assert at.session_state['nav'] == '🙍 个人主页'
+    assert any(str(title.value) == '🙍 个人主页' for title in at.title)
+
+    at.query_params.clear()
+    at.query_params.update({'page': 'problems', 'problem': '1001'})
+    at.run()
+    assert at.session_state['nav'] == '📋 题目'
+    assert at.session_state['prob_view'] == 'detail'
+    assert any(str(title.value) == 'A + B Problem' for title in at.title)
+
+    # 模拟浏览器“返回”恢复之前的 URL。
+    at.query_params.clear()
+    at.query_params.update({'page': 'profile'})
+    at.run()
+    assert at.session_state['nav'] == '🙍 个人主页'
+    assert any(str(title.value) == '🙍 个人主页' for title in at.title)
+
+
+def test_profile_can_rename_current_user(monkeypatch):
     state = {}
     _fake_api(monkeypatch, state)
     at = AppTest.from_file(APP, default_timeout=30)
     at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
+    at.session_state['nav'] = '🙍 个人主页'
+    at.run()
+
+    rename = next(item for item in at.text_input if item.label.startswith('新用户名'))
+    rename.set_value('alice_new')
+    next(button for button in at.button if button.label == '保存用户名').click().run()
+    assert not at.exception
+    assert state['username'] == 'alice_new'
+    assert at.session_state['me']['username'] == 'alice_new'
+
+
+def test_ai_progress_and_cancel_keep_current_page(monkeypatch):
+    state = {}
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'root', 'user_id': '1', 'role': 'admin'}
     at.session_state['nav'] = '✨ AI 命题'
     at.session_state['ai_view'] = 'task'
     at.session_state['ai_task_id'] = 7
@@ -193,7 +306,7 @@ def test_ai_progress_and_cancel_keep_current_page(monkeypatch):
 def test_ai_result_can_be_reviewed_before_import(monkeypatch):
     _fake_api(monkeypatch, {'status': 'done'})
     at = AppTest.from_file(APP, default_timeout=30)
-    at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
+    at.session_state['me'] = {'username': 'root', 'user_id': '1', 'role': 'admin'}
     at.session_state['nav'] = '✨ AI 命题'
     at.session_state['ai_view'] = 'task'
     at.session_state['ai_task_id'] = 7

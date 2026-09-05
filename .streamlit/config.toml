@@ -1,9 +1,9 @@
-# Streamlit 主题（洛谷 × 力扣风格）：白底 + 洛谷蓝主色 + 力扣徽章配色
+# Streamlit 主题：蓝紫主色、淡蓝背景，与自定义渐变界面保持一致
 [theme]
-primaryColor = "#3498db"
-backgroundColor = "#f5f9fd"
-secondaryBackgroundColor = "#f6f8fa"
-textColor = "#1f2328"
+primaryColor = "#4f46e5"
+backgroundColor = "#eef6ff"
+secondaryBackgroundColor = "#f1efff"
+textColor = "#172033"
 
 [server]
 headless = true

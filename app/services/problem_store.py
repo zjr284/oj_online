@@ -20,6 +20,8 @@ from app import config
 from app.core.errors import ApiError
 from app.schemas.problem import PROBLEM_ID_RE, ProblemConfig
 
+LEGACY_PROBLEM_IDS = {"P1001": "1001", "sum_2": "1002", "find_range": "1003"}
+
 
 class ProblemStore:
     """基于 JSON 文件的题目存储实现。"""
@@ -42,12 +44,63 @@ class ProblemStore:
                 return operation()
         return await asyncio.to_thread(run)
 
+    async def migrate_numeric_ids(self) -> dict[str, str]:
+        """把旧的非数字题目文件安全迁移为数字编号，并返回引用映射。"""
+        def _migrate() -> dict[str, str]:
+            self.base_dir.mkdir(parents=True, exist_ok=True)
+            mapping = dict(LEGACY_PROBLEM_IDS)
+            used = {
+                path.stem
+                for path in self.base_dir.glob("*.json")
+                if re.fullmatch(PROBLEM_ID_RE, path.stem)
+            }
+            next_id = max([1000, *(int(value) for value in used)]) + 1
+
+            paths = sorted(
+                self.base_dir.glob("*.json"),
+                key=lambda path: (
+                    not bool(re.fullmatch(PROBLEM_ID_RE, path.stem)),
+                    int(path.stem) if re.fullmatch(PROBLEM_ID_RE, path.stem) else path.stem,
+                ),
+            )
+            for path in paths:
+                try:
+                    raw = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                old_id = str(raw.get("id", path.stem))
+                if re.fullmatch(PROBLEM_ID_RE, old_id) and path.stem == old_id:
+                    continue
+                new_id = mapping.get(old_id)
+                if not new_id or new_id in used:
+                    while str(next_id) in used:
+                        next_id += 1
+                    new_id = str(next_id)
+                    next_id += 1
+                    mapping[old_id] = new_id
+                used.add(new_id)
+                raw["id"] = new_id
+                target = self.base_dir / f"{new_id}.json"
+                self._replace(target, json.dumps(raw, ensure_ascii=False, indent=2))
+                if path != target:
+                    path.unlink(missing_ok=True)
+            return mapping
+
+        return await self._locked(_migrate)
+
     async def list_problems(self) -> list[dict]:
         """返回 [{id, title}]，供题目列表页使用。"""
         def _read() -> list[dict]:
             self.base_dir.mkdir(parents=True, exist_ok=True)
             items: list[dict] = []
-            for path in sorted(self.base_dir.glob("*.json")):
+            paths = sorted(
+                self.base_dir.glob("*.json"),
+                key=lambda path: (
+                    not bool(re.fullmatch(PROBLEM_ID_RE, path.stem)),
+                    int(path.stem) if re.fullmatch(PROBLEM_ID_RE, path.stem) else path.stem,
+                ),
+            )
+            for path in paths:
                 try:
                     data = ProblemConfig.model_validate_json(path.read_text(encoding="utf-8"))
                 except (ValueError, ValidationError):

@@ -59,7 +59,7 @@ _cancelled: set[int] = set()
 
 SYSTEM_PROMPT = """你是 OJ 在线评测系统的出题助手。请根据用户需求生成一道编程题，并只输出一个 JSON 对象（不要 markdown 代码块，不要任何多余文字），字段如下：
 {
-  "id": "简短唯一的英文标识（如 sum_of_two）",
+  "id": "1–18 位唯一数字编号（如 2001）",
   "title": "题目名称",
   "description": "题目描述",
   "input_description": "输入格式说明",

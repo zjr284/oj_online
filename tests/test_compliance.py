@@ -63,37 +63,37 @@ async def test_visibility_cannot_be_changed_through_problem_edit(client):
     await _setup(client)
     await client.post('/api/users/', json={'username': 'alice', 'password': 'secret1'})
     await login(client, 'alice', 'secret1')
-    response = await client.put('/api/problems/sum_2', json={**PROBLEM, 'public_cases': True})
+    response = await client.put('/api/problems/1002', json={**PROBLEM, 'public_cases': True})
     assert response.status_code == 403
-    response = await client.post('/api/problems/', json={**PROBLEM, 'id': 'new', 'public_cases': True})
+    response = await client.post('/api/problems/', json={**PROBLEM, 'id': '2003', 'public_cases': True})
     assert response.status_code == 403
     await login(client, 'admin', 'admintestpassword')
-    await client.put('/api/problems/sum_2/log_visibility', json={'public_cases': True})
+    await client.put('/api/problems/1002/log_visibility', json={'public_cases': True})
     await login(client, 'alice', 'secret1')
-    response = await client.put('/api/problems/sum_2', json={**PROBLEM, 'title': 'Edited'})
+    response = await client.put('/api/problems/1002', json={**PROBLEM, 'title': 'Edited'})
     assert response.status_code == 200
-    assert (await client.get('/api/problems/sum_2')).json()['data']['public_cases'] is True
-    response = await client.put('/api/problems/sum_2', json={**PROBLEM, 'public_cases': False})
+    assert (await client.get('/api/problems/1002')).json()['data']['public_cases'] is True
+    response = await client.put('/api/problems/1002', json={**PROBLEM, 'public_cases': False})
     assert response.status_code == 403
 
 
 async def test_omitted_limits_fall_back_without_changing_api_defaults(client):
     await _setup(client)
     problem = {k: v for k, v in PROBLEM.items() if k not in ('time_limit', 'memory_limit')}
-    problem.update(id='fallback', testcases=[{'input': '', 'output': '3'}])
+    problem.update(id='2001', testcases=[{'input': '', 'output': '3'}])
     assert (await client.post('/api/problems/', json=problem)).status_code == 200
-    response = await client.get('/api/problems/fallback')
+    response = await client.get('/api/problems/2001')
     assert response.json()['data']['time_limit'] == 3
     assert response.json()['data']['memory_limit'] == 128
     # 更新可见性不应把 API 默认值变成题目显式限制。
-    await client.put('/api/problems/fallback/log_visibility', json={'public_cases': True})
+    await client.put('/api/problems/2001/log_visibility', json={'public_cases': True})
     await client.post('/api/languages/', json={
         'name': 'short', 'file_ext': '.py', 'run_cmd': 'python3 {src}',
         'time_limit': 0.15, 'memory_limit': 16})
-    sid = await _submit(client, 'import time; time.sleep(0.4); print(3)', 'fallback', 'short')
+    sid = await _submit(client, 'import time; time.sleep(0.4); print(3)', '2001', 'short')
     data = await wait_status(client, sid)
     assert data['status'] == 'success' and data['verdicts'] == {'TLE': 1}
-    cfg = await store.get('fallback', for_judge=True)
+    cfg = await store.get('2001', for_judge=True)
     engine = runner.JudgeRunner({'file_ext': '.py', 'time_limit': 2, 'memory_limit': 16},
                                 cfg, config.DATA_DIR)
     assert engine.memory_limit == 16
@@ -119,7 +119,7 @@ async def test_deleted_problem_does_not_erase_submission_log(client):
     await _setup(client)
     sid = await _submit(client, AC_CODE)
     await wait_status(client, sid)
-    await client.delete('/api/problems/sum_2')
+    await client.delete('/api/problems/1002')
     response = await client.get(f'/api/submissions/{sid}/log')
     assert response.status_code == 200
     assert len(response.json()['data']['details']) == 4
@@ -159,9 +159,9 @@ async def test_problem_read_guards_all_entry_points(client):
     with pytest.raises(Exception) as exc:
         await store.get('../outside')
     assert exc.value.status == 400
-    (config.PROBLEMS_DIR / 'sum_2.json').write_text('{broken')
+    (config.PROBLEMS_DIR / '1002.json').write_text('{broken')
     response = await client.post('/api/submissions/', json={
-        'problem_id': 'sum_2', 'language': 'python', 'code': 'print(1)'})
+        'problem_id': '1002', 'language': 'python', 'code': 'print(1)'})
     assert response.status_code == 500
 
 
@@ -262,9 +262,9 @@ async def test_ai_reference_id_and_total_timeout(client, monkeypatch):
     await client.post('/api/problems/', json=PROBLEM)
     _mock_model(monkeypatch)
     tid = (await client.post('/api/ai/problem-tasks/', json={
-        'requirement': '改编', 'problem_id': 'sum_2'})).json()['data']['task_id']
+        'requirement': '改编', 'problem_id': '1002'})).json()['data']['task_id']
     task = await _wait_task(client, tid)
-    assert task['result']['id'] == 'sum_2'
+    assert task['result']['id'] == '1002'
     _mock_model(monkeypatch, delay=10)
     monkeypatch.setattr(ai_service, 'REQUEST_TIMEOUT', 0.15)
     tid = (await client.post('/api/ai/problem-tasks/', json={'requirement': 'test'})).json()['data']['task_id']
@@ -302,7 +302,7 @@ async def test_reset_stops_tasks_and_clears_rate_limit(client, monkeypatch):
 async def test_legacy_results_normalized_without_rejudging(client):
     await _setup(client)
     async with SessionLocal() as db:
-        db.add(Submission(user_id=1, problem_id='sum_2', language='python', code='x',
+        db.add(Submission(user_id=1, problem_id='1002', language='python', code='x',
                           status='error', score=10, total_score=40, counts={'AC': 1, 'WA': 3}))
         await db.commit()
     await judge_service.normalize_legacy_results()

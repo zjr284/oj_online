@@ -222,6 +222,44 @@ async def test_get_user_unauth(client):
     assert (await client.get("/api/users/abc")).status_code == 400
 
 
+async def test_user_can_rename_self_and_keep_session(client):
+    await _reg(client, "alice", "secret1")
+    await login(client, "alice", "secret1")
+
+    resp = await client.put("/api/users/2/username", json={"username": "alice_new"})
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "code": 200,
+        "msg": "username updated",
+        "data": {"user_id": "2", "username": "alice_new"},
+    }
+    # 改名不会注销当前会话；刷新恢复接口立即返回新用户名。
+    assert (await client.get("/api/auth/me")).json()["data"]["username"] == "alice_new"
+    assert (await client.get("/api/users/2")).json()["data"]["username"] == "alice_new"
+
+    await client.post("/api/auth/logout")
+    assert (await client.post("/api/auth/login", json={
+        "username": "alice", "password": "secret1",
+    })).status_code == 401
+    assert (await client.post("/api/auth/login", json={
+        "username": "alice_new", "password": "secret1",
+    })).status_code == 200
+
+
+async def test_rename_username_validation_and_permissions(client):
+    await _reg(client, "alice", "secret1")
+    await _reg(client, "bobby", "secret1")
+    await login(client, "alice", "secret1")
+
+    assert (await client.put("/api/users/2/username", json={"username": "ab"})).status_code == 400
+    assert (await client.put("/api/users/2/username", json={"username": "bobby"})).status_code == 400
+    assert (await client.put("/api/users/3/username", json={"username": "robert"})).status_code == 403
+    async with _new_client() as anonymous:
+        assert (await anonymous.put(
+            "/api/users/2/username", json={"username": "alice_new"},
+        )).status_code == 401
+
+
 async def test_user_stats_semantics(client):
     # submit_count 按提交次数计；resolve_count 按通过（success）的题目数计（api.md）
     await _reg(client, "alice", "secret1")
@@ -229,13 +267,13 @@ async def test_user_stats_semantics(client):
     alice_id = int(await _get_id(client, "alice"))
     async with SessionLocal() as db:
         db.add_all([
-            Submission(user_id=alice_id, problem_id="p1", language="python", code="print(1)",
+            Submission(user_id=alice_id, problem_id="1001", language="python", code="print(1)",
                        status="success", score=10, total_score=10),
-            Submission(user_id=alice_id, problem_id="p1", language="python", code="print(1)",
+            Submission(user_id=alice_id, problem_id="1001", language="python", code="print(1)",
                        status="error"),
-            Submission(user_id=alice_id, problem_id="p2", language="python", code="print(1)",
+            Submission(user_id=alice_id, problem_id="1002", language="python", code="print(1)",
                        status="success", score=10, total_score=10),
-            Submission(user_id=alice_id, problem_id="p3", language="python", code="print(1)",
+            Submission(user_id=alice_id, problem_id="1003", language="python", code="print(1)",
                        status="pending"),
         ])
         await db.commit()
@@ -356,9 +394,9 @@ async def test_list_users_sorted_by_submit_count(client):
     await _setup_users(client)                       # alice=2, bob=3, carol=4
     async with SessionLocal() as db:
         db.add_all([
-            Submission(user_id=3, problem_id="p1", language="python", code="x", status="success"),
-            Submission(user_id=3, problem_id="p2", language="python", code="x", status="success"),
-            Submission(user_id=4, problem_id="p1", language="python", code="x", status="success"),
+            Submission(user_id=3, problem_id="1001", language="python", code="x", status="success"),
+            Submission(user_id=3, problem_id="1002", language="python", code="x", status="success"),
+            Submission(user_id=4, problem_id="1001", language="python", code="x", status="success"),
         ])
         await db.commit()
 
@@ -435,7 +473,7 @@ async def test_reset_clears_everything(client):
     await _setup_users(client, ("alice", "bob"))
 
     async with SessionLocal() as db:
-        db.add(Submission(user_id=2, problem_id="p1", language="python", code="x", status="success"))
+        db.add(Submission(user_id=2, problem_id="1001", language="python", code="x", status="success"))
         await db.commit()
 
     async with _new_client() as c2:                      # 其他用户的旧会话

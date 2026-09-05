@@ -3,6 +3,7 @@
 运行：streamlit run app.py（后端需已在 8000 端口运行，可用 OJ_API_BASE 环境变量指向其它地址）
 
 要求（step6.md）：
+- Step 2 扩展入口：查询语言列表、管理员动态注册语言
 - 任务 1 用户页面组：注册/登录/退出、用户信息展示、用户管理（仅管理员）
 - 任务 2 题目页面组：列表/详情/新增/编辑/删除，表单提交前做格式检查
 - 任务 3 评测与提交页面组：题目详情内嵌代码提交（力扣式双栏）、提交记录列表/详情、轮询评测状态、明确展示 CE/RE/TLE 等
@@ -13,11 +14,17 @@
 import html
 import json
 import os
+import re
 import time
+from urllib.parse import urlencode
 
 import httpx
 import pandas as pd
 import streamlit as st
+
+from app import config
+from app.core.deps import SESSION_COOKIE
+from app.frontend_cookie import write_session_cookie
 
 API_BASE = os.environ.get("OJ_API_BASE", "http://127.0.0.1:8000")
 
@@ -44,6 +51,90 @@ class ApiError(Exception):
 _SESSION_PARAM = "oj_s"   # 仅用于清理旧版 URL 凭据
 _UID_PARAM = "oj_u"
 
+NAV_ROUTES = {
+    "📋 题目": "problems",
+    "📜 评测记录": "submissions",
+    "🙍 个人主页": "profile",
+    "🧩 语言管理": "languages",
+    "✨ AI 命题": "ai",
+    "🛠 用户管理": "users",
+    "🛡 访问审计": "audit",
+}
+ROUTE_PAGES = {slug: page for page, slug in NAV_ROUTES.items()}
+
+
+def _valid_problem_id(value: object) -> bool:
+    return bool(re.fullmatch(r"[0-9]{1,18}", str(value)))
+
+
+def _route_href(page: str, **params) -> str:
+    """生成同一 Streamlit 页面内的可回退链接。"""
+    slug = NAV_ROUTES.get(page, page)
+    query = {"page": slug, **{k: str(v) for k, v in params.items() if v not in (None, "")}}
+    return "?" + urlencode(query)
+
+
+def _set_route(page: str, **params) -> None:
+    """把界面位置写入 URL，使浏览器前进/后退可以恢复页面。"""
+    slug = NAV_ROUTES.get(page, page)
+    st.query_params.from_dict(
+        {"page": slug, **{k: str(v) for k, v in params.items() if v not in (None, "")}}
+    )
+
+
+def _restore_route() -> None:
+    """以 URL 为准恢复主页面及题目、提交、AI 的二级页面。"""
+    me = st.session_state.get("me")
+    if not me:
+        return
+    allowed = ["📋 题目", "📜 评测记录", "🙍 个人主页"]
+    if me.get("role") == "admin":
+        allowed += ["🧩 语言管理", "✨ AI 命题", "🛠 用户管理", "🛡 访问审计"]
+    has_url_route = bool(st.query_params.get("page"))
+    requested = ROUTE_PAGES.get(st.query_params.get("page", ""))
+    page = requested if requested in allowed else st.session_state.get("nav")
+    if page not in allowed:
+        page = allowed[0]
+    st.session_state["nav"] = page
+    if not has_url_route:
+        return
+
+    if page == "📋 题目":
+        problem_id = st.query_params.get("problem")
+        view = st.query_params.get("view")
+        if view == "new":
+            st.session_state["prob_view"] = "new"
+            st.session_state.pop("prob_id", None)
+        elif problem_id and _valid_problem_id(problem_id):
+            st.session_state["prob_id"] = str(problem_id)
+            st.session_state["prob_view"] = "edit" if view == "edit" else "detail"
+        else:
+            st.session_state["prob_view"] = "list"
+            st.session_state.pop("prob_id", None)
+    elif page == "📜 评测记录":
+        submission_id = st.query_params.get("submission")
+        st.session_state["sub_filter_problem"] = st.query_params.get("problem", "")
+        if submission_id and str(submission_id).isdigit():
+            st.session_state["sub_id"] = str(submission_id)
+            st.session_state["sub_view"] = "detail"
+        else:
+            st.session_state["sub_view"] = "list"
+            st.session_state.pop("sub_id", None)
+    elif page == "✨ AI 命题":
+        task_id = st.query_params.get("task")
+        if task_id and str(task_id).isdigit():
+            st.session_state["ai_task_id"] = int(task_id)
+            st.session_state["ai_view"] = "task"
+        else:
+            st.session_state["ai_view"] = "home"
+            st.session_state.pop("ai_task_id", None)
+
+
+def _sidebar_route_changed() -> None:
+    page = st.session_state.get("nav")
+    if page in NAV_ROUTES:
+        _set_route(page)
+
 
 def _clear_session():
     """清除本地登录态与页面状态（登出/会话过期时），并清掉 URL 中的会话参数。"""
@@ -59,14 +150,29 @@ def _clear_session():
 
 
 def _persist_login():
-    """会话只留在当前 Streamlit 会话内，不能写入 URL、访问日志或分享链接。"""
+    """安排下次渲染同步浏览器 Cookie，并清除旧版 URL 凭据。"""
     for key in (_SESSION_PARAM, _UID_PARAM):
         st.query_params.pop(key, None)
 
 
 def _restore_login():
-    """清除旧版本遗留的 URL 凭据，不使用链接中的身份信息登录。"""
-    _persist_login()
+    """整页刷新后用浏览器 Cookie 向后端校验并恢复登录用户。"""
+    for key in (_SESSION_PARAM, _UID_PARAM):
+        st.query_params.pop(key, None)
+    if st.session_state.get("me"):
+        return
+    try:
+        token = st.context.cookies.get(SESSION_COOKIE)
+    except Exception:
+        token = None
+    if not isinstance(token, str) or not token:
+        return
+    st.session_state["cookies"] = {SESSION_COOKIE: token}
+    try:
+        st.session_state["me"] = api("GET", "/api/auth/me")
+    except ApiError:
+        # api() 已清理无效或过期的会话。
+        return
 
 
 def api(method: str, path: str, **kwargs):
@@ -78,7 +184,11 @@ def api(method: str, path: str, **kwargs):
     """
     cookies = st.session_state.get("cookies", {})
     try:
-        resp = httpx.request(method, API_BASE + path, cookies=cookies, timeout=30, **kwargs)
+        # 沙箱/开发机常设置 HTTP_PROXY，而部分客户端不识别 NO_PROXY 中的
+        # `127.*` 写法；后端是本机服务，必须直连，避免请求被代理成 502。
+        resp = httpx.request(
+            method, API_BASE + path, cookies=cookies, timeout=30, trust_env=False, **kwargs,
+        )
     except httpx.HTTPError as e:
         raise ApiError(0, f"无法连接后端（{API_BASE}）：{e}") from e
     try:
@@ -108,105 +218,197 @@ def friendly_error(err: ApiError):
 
 _UI_CSS = """
 <style>
-/* 全局：白底卡片式界面（洛谷配色 + 力扣细节） */
+:root {
+  --oj-blue: #2563eb;
+  --oj-indigo: #4f46e5;
+  --oj-cyan: #06b6d4;
+  --oj-teal: #14b8a6;
+  --oj-violet: #8b5cf6;
+  --oj-ink: #172033;
+  --oj-muted: #667085;
+  --oj-line: rgba(148, 163, 184, .24);
+  --oj-shadow: 0 18px 50px rgba(43, 67, 101, .11);
+}
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
+[data-testid="stAppDeployButton"] {display: none;}
 header[data-testid="stHeader"] {background: transparent; pointer-events: none;}
-.block-container {max-width: 1180px; padding-top: 2.2rem;}
 
-/* 页面背景：浅蓝调 + 网格圆点 + 角落光晕（fixed 固定于视口，随滚动保持） */
+/* 多层渐变、细网格和柔光构成页面背景。 */
 [data-testid="stApp"] {
   background:
-    radial-gradient(1000px 520px at 88% -8%, rgba(52, 152, 219, .10), transparent 62%) fixed,
-    radial-gradient(820px 460px at -8% 108%, rgba(45, 160, 152, .08), transparent 62%) fixed,
-    radial-gradient(circle, rgba(31, 35, 40, .05) 1px, transparent 1.5px) 0 0 / 28px 28px fixed,
-    linear-gradient(180deg, #f5f9fd 0%, #f8fbfe 100%) fixed;
+    radial-gradient(900px 560px at 96% -8%, rgba(139, 92, 246, .18), transparent 64%) fixed,
+    radial-gradient(760px 520px at -8% 22%, rgba(6, 182, 212, .16), transparent 65%) fixed,
+    radial-gradient(680px 460px at 76% 106%, rgba(251, 146, 60, .12), transparent 66%) fixed,
+    linear-gradient(rgba(99, 102, 241, .035) 1px, transparent 1px) 0 0 / 32px 32px fixed,
+    linear-gradient(90deg, rgba(99, 102, 241, .035) 1px, transparent 1px) 0 0 / 32px 32px fixed,
+    linear-gradient(145deg, #eef6ff 0%, #f7f5ff 46%, #eefbf9 100%) fixed;
+}
+.block-container {
+  max-width: 1210px; margin-top: 1.25rem; margin-bottom: 2.2rem; padding: 2.35rem 2.7rem 3rem;
+  background: linear-gradient(145deg, rgba(255,255,255,.93), rgba(255,255,255,.78));
+  border: 1px solid rgba(255,255,255,.82); border-radius: 24px;
+  box-shadow: var(--oj-shadow), inset 0 1px 0 rgba(255,255,255,.9); backdrop-filter: blur(16px);
 }
 
-/* 页面标题：力扣式蓝色短横线点缀 */
-h1 {font-weight: 800; color: #1f2328; padding-bottom: 6px;}
-h1::after {content: ""; display: block; width: 56px; height: 4px; margin-top: 8px;
-           border-radius: 2px; background: linear-gradient(90deg, #3498db, #7fc4f0, #2dd4bf);}
-h2, h3 {color: #1f2328;}
+/* 标题与正文。 */
+h1 {font-weight: 850; letter-spacing: -.025em; color: var(--oj-ink); padding-bottom: 7px;}
+h1::after {content: ""; display: block; width: 72px; height: 5px; margin-top: 10px;
+  border-radius: 999px; background: linear-gradient(90deg, var(--oj-blue), var(--oj-violet), var(--oj-teal));
+  box-shadow: 0 3px 12px rgba(79, 70, 229, .25);}
+h2, h3 {color: var(--oj-ink); letter-spacing: -.012em;}
+h3 {border-left: 4px solid #60a5fa; padding-left: 10px;}
+a {color: var(--oj-blue);}
+[data-testid="stCaptionContainer"] {color: var(--oj-muted);}
+hr {border-color: var(--oj-line); margin: 1.45rem 0;}
 
-/* 侧边栏：蓝调渐变底 + 顶部彩带 + 品牌短横线，导航项胶囊高亮（选中蓝色底） */
-[data-testid="stSidebar"] {border-right: 1px solid #e5e7eb;
-  background: linear-gradient(180deg, #eef6fd 0%, #f8fafc 35%, #ffffff 100%);}
-[data-testid="stSidebar"]::before {content: ""; display: block; height: 4px;
-  background: linear-gradient(90deg, #3498db, #7fc4f0 55%, #2dd4bf);}
-[data-testid="stSidebar"] h2::after {content: ""; display: block; width: 44px; height: 3px;
-  margin-top: 6px; border-radius: 2px; background: linear-gradient(90deg, #3498db, #2dd4bf);}
+/* 深色渐变侧边栏与彩色品牌区。 */
+[data-testid="stSidebar"] {
+  border-right: 0;
+  background:
+    radial-gradient(260px 220px at 18% 4%, rgba(34, 211, 238, .23), transparent 68%),
+    radial-gradient(280px 240px at 108% 78%, rgba(167, 139, 250, .24), transparent 70%),
+    linear-gradient(165deg, #15284d 0%, #1e3a6d 48%, #29245b 100%);
+  box-shadow: 10px 0 34px rgba(23, 39, 73, .18);
+}
+[data-testid="stSidebar"]::before {content: ""; display: block; height: 5px;
+  background: linear-gradient(90deg, #22d3ee, #60a5fa 38%, #a78bfa 72%, #fb7185);}
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {color: rgba(241, 245, 249, .82);}
+[data-testid="stSidebar"] hr {border-color: rgba(255,255,255,.13);}
 [data-testid="stSidebar"] [role="radiogroup"] label {
-  padding: 8px 12px; border-radius: 8px; margin: 2px 0; transition: background .15s;}
-[data-testid="stSidebar"] [role="radiogroup"] label:hover {background: #f0f7fe;}
+  padding: 10px 13px; border: 1px solid transparent; border-radius: 11px; margin: 4px 0;
+  color: rgba(248,250,252,.86); transition: background .18s, border-color .18s, transform .18s;}
+[data-testid="stSidebar"] [role="radiogroup"] label:hover {
+  background: rgba(255,255,255,.09); border-color: rgba(255,255,255,.12); transform: translateX(3px);}
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
-  background: #e8f1fb; font-weight: 700; color: #2f80c7;}
+  background: linear-gradient(100deg, rgba(56,189,248,.25), rgba(139,92,246,.22));
+  border-color: rgba(125,211,252,.34); color: #fff; font-weight: 750;
+  box-shadow: 0 8px 24px rgba(2, 8, 23, .15);}
+[data-testid="stSidebar"] button {
+  background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.2); color: #f8fafc;}
+[data-testid="stSidebar"] button:hover {background: rgba(255,255,255,.15); border-color: rgba(255,255,255,.34);}
+.oj-brand {display:flex; align-items:center; gap:12px; margin: 4px 0 10px;}
+.oj-brand-mark {display:grid; place-items:center; width:44px; height:44px; border-radius:14px;
+  color:#fff; font-size:22px; background:linear-gradient(145deg,#22d3ee,#6366f1 62%,#a855f7);
+  box-shadow:0 8px 22px rgba(34,211,238,.24), inset 0 1px 0 rgba(255,255,255,.32);}
+.oj-brand-name {color:#fff; font-size:1.08rem; line-height:1.15; font-weight:800; letter-spacing:.01em;}
+.oj-brand-sub {color:rgba(226,232,240,.65); font-size:.72rem; margin-top:4px; letter-spacing:.08em; text-transform:uppercase;}
+.oj-user-card {padding:10px 12px; margin:2px 0 4px; border-radius:12px;
+  color:#eaf2ff; background:rgba(255,255,255,.075); border:1px solid rgba(255,255,255,.11);}
 
-/* 按钮：圆角 + 主按钮蓝色渐变 */
+/* 按钮和表单。 */
 .stButton > button, [data-testid="stBaseButton-primary"], button[kind] {
-  border-radius: 8px; font-weight: 600; transition: all .15s;}
+  border-radius: 10px; font-weight: 680; transition: transform .16s, box-shadow .16s, border-color .16s;}
+.stButton > button:hover, button[kind]:hover {transform: translateY(-1px); box-shadow: 0 7px 18px rgba(51,65,85,.12);}
 [data-testid="stBaseButton-primary"], button[kind="primary"] {
-  background: linear-gradient(135deg, #3498db, #2f80c7); color: #fff; border: none;}
+  background: linear-gradient(120deg, var(--oj-blue), var(--oj-indigo) 58%, var(--oj-violet));
+  color: #fff; border: none; box-shadow: 0 7px 20px rgba(79,70,229,.22);}
 [data-testid="stBaseButton-primary"]:hover, button[kind="primary"]:hover {
-  background: linear-gradient(135deg, #2f80c7, #276fae);}
+  background: linear-gradient(120deg, #1d4ed8, #4338ca 58%, #7c3aed); box-shadow: 0 10px 24px rgba(79,70,229,.3);}
+[data-testid="stForm"] {
+  background: linear-gradient(145deg, rgba(239,246,255,.78), rgba(250,245,255,.76));
+  border: 1px solid rgba(129,140,248,.2); border-radius: 17px; padding: 1.35rem 1.45rem;
+  box-shadow: 0 10px 28px rgba(71,85,105,.07);}
+[data-baseweb="input"] > div, [data-baseweb="select"] > div,
+[data-testid="stTextArea"] textarea, [data-testid="stNumberInput"] input {
+  background: rgba(255,255,255,.9); border-color: rgba(148,163,184,.36); border-radius: 9px;}
+[data-baseweb="input"] > div:focus-within, [data-baseweb="select"] > div:focus-within,
+[data-testid="stTextArea"] textarea:focus {border-color: #60a5fa; box-shadow: 0 0 0 3px rgba(96,165,250,.16);}
 
-/* 指标卡：力扣统计卡（白底圆角卡片 + 顶部彩带 + 悬浮抬升） */
-[data-testid="stMetric"] {background: #fff; border: 1px solid #e5e7eb;
-  border-radius: 12px; padding: 14px 18px; position: relative; overflow: hidden;
-  transition: box-shadow .2s ease, transform .2s ease;}
+/* 指标卡使用多彩顶部光带。 */
+[data-testid="stMetric"] {background: linear-gradient(145deg, #fff, #f8fbff); border: 1px solid var(--oj-line);
+  border-radius: 15px; padding: 16px 19px; position: relative; overflow: hidden;
+  box-shadow: 0 8px 24px rgba(71,85,105,.07); transition: box-shadow .2s, transform .2s;}
 [data-testid="stMetric"]::before {content: ""; position: absolute; top: 0; left: 0; right: 0;
-  height: 3px; background: linear-gradient(90deg, #3498db, #7fc4f0);}
-[data-testid="stMetric"]:hover {box-shadow: 0 8px 18px rgba(31, 35, 40, .08);
-  transform: translateY(-2px);}
-[data-testid="stMetricValue"] {color: #1f2328; font-weight: 700;}
-[data-testid="stMetricLabel"] {color: #6b7280;}
+  height: 4px; background: linear-gradient(90deg, var(--oj-cyan), var(--oj-blue), var(--oj-violet));}
+[data-testid="column"]:nth-child(2n) [data-testid="stMetric"]::before {
+  background: linear-gradient(90deg, #8b5cf6, #ec4899, #fb7185);}
+[data-testid="column"]:nth-child(3n) [data-testid="stMetric"]::before {
+  background: linear-gradient(90deg, #14b8a6, #22c55e, #84cc16);}
+[data-testid="stMetric"]:hover {box-shadow: 0 14px 30px rgba(51,65,85,.13); transform: translateY(-3px);}
+[data-testid="stMetricValue"] {color: var(--oj-ink); font-weight: 800;}
+[data-testid="stMetricLabel"] {color: var(--oj-muted);}
 
-/* 页签：选中蓝色加粗 */
-button[role="tab"] {border-radius: 8px 8px 0 0;}
-button[role="tab"][aria-selected="true"] {color: #2f80c7; font-weight: 700;}
+/* 标签页、折叠面板、进度条和代码块。 */
+[data-testid="stTabs"] [role="tablist"] {gap:6px; border-bottom-color:var(--oj-line);}
+button[role="tab"] {border-radius: 9px 9px 0 0; padding-left:14px; padding-right:14px;}
+button[role="tab"][aria-selected="true"] {color: var(--oj-indigo); font-weight: 750; background:rgba(99,102,241,.08);}
+[data-testid="stExpander"] {background: rgba(255,255,255,.74); border:1px solid var(--oj-line);
+  border-radius:13px; box-shadow:0 5px 18px rgba(71,85,105,.05); overflow:hidden;}
+[data-testid="stCodeBlock"] pre {background: linear-gradient(145deg,#172033,#202c46) !important;
+  border:1px solid rgba(125,211,252,.15); border-radius: 12px; box-shadow:0 10px 25px rgba(15,23,42,.16);}
+[data-testid="stProgress"] > div > div > div > div {
+  background: linear-gradient(90deg, var(--oj-cyan), var(--oj-blue), var(--oj-violet));}
 
-/* 代码块：力扣深色编辑器风格 */
-[data-testid="stCodeBlock"] pre {background: #1e2530 !important; border-radius: 8px;}
-
-/* 提示框：圆角 + 左侧状态色条 */
-[data-testid="stAlert"] {border-radius: 10px; border-left: 4px solid #94a3b8;}
-[data-testid="stAlert"][kind="success"] {border-left-color: #2cbb5d;}
-[data-testid="stAlert"][kind="info"] {border-left-color: #3498db;}
+/* 提示框与数据表。 */
+[data-testid="stAlert"] {border-radius: 12px; border-left: 5px solid #94a3b8;
+  box-shadow: 0 6px 18px rgba(71,85,105,.06);}
+[data-testid="stAlert"][kind="success"] {border-left-color: #22c55e;}
+[data-testid="stAlert"][kind="info"] {border-left-color: #3b82f6;}
 [data-testid="stAlert"][kind="warning"] {border-left-color: #f59e0b;}
-[data-testid="stAlert"][kind="error"] {border-left-color: #d05451;}
+[data-testid="stAlert"][kind="error"] {border-left-color: #ef4444;}
+[data-testid="stDataFrame"] {border: 1px solid var(--oj-line); border-radius: 13px; overflow: hidden;
+  box-shadow:0 8px 22px rgba(71,85,105,.06);}
 
-/* 表格容器与分割线 */
-[data-testid="stDataFrame"] {border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden;}
-hr {border-color: #e5e7eb;}
-[data-testid="stCaptionContainer"] {color: #6b7280;}
-
-/* 自定义 HTML 表格：洛谷题单风格卡片表（悬浮抬升） */
-.oj-card {border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; background: #fff;
-          box-shadow: 0 1px 2px rgba(0, 0, 0, .04); margin: .3rem 0 1rem;
-          transition: box-shadow .2s ease, transform .2s ease;}
-.oj-card:hover {box-shadow: 0 8px 20px rgba(31, 35, 40, .09); transform: translateY(-2px);}
+/* 自定义表格：渐变表头、斑马纹与悬浮高亮。 */
+.oj-card {border: 1px solid var(--oj-line); border-radius: 15px; overflow: hidden;
+  background: rgba(255,255,255,.9); box-shadow: 0 9px 26px rgba(71,85,105,.08); margin: .45rem 0 1.15rem;
+  transition: box-shadow .2s, transform .2s;}
+.oj-card:hover {box-shadow: 0 16px 34px rgba(51,65,85,.13); transform: translateY(-2px);}
 .oj-table {width: 100%; border-collapse: collapse; font-size: 14px;}
-.oj-table thead th {background: #f6f8fa; color: #57606a; text-align: left; font-weight: 600;
-                    padding: 10px 14px; border-bottom: 1px solid #e5e7eb;}
-.oj-table tbody td {padding: 10px 14px; border-bottom: 1px solid #f0f2f5; color: #1f2328;}
-.oj-table tbody tr:hover {background: #f8fafc;}
+.oj-table thead th {background: linear-gradient(110deg, #edf6ff, #f1efff 65%, #ecfdf8);
+  color: #3f4b63; text-align: left; font-weight: 750; padding: 12px 14px; border-bottom: 1px solid rgba(99,102,241,.16);}
+.oj-table tbody td {padding: 11px 14px; border-bottom: 1px solid rgba(226,232,240,.78); color: var(--oj-ink);}
+.oj-table tbody tr:nth-child(even) {background: rgba(241,245,249,.48);}
+.oj-table tbody tr:hover {background: linear-gradient(90deg, rgba(219,234,254,.64), rgba(237,233,254,.48));}
 .oj-table tbody tr:last-child td {border-bottom: none;}
-.oj-mono {font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #57606a;}
+.oj-mono {font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #4f5d75;}
+.oj-problem-link {color:var(--oj-indigo); font-weight:750; text-decoration:none;}
+.oj-problem-link:hover {color:var(--oj-violet); text-decoration:underline; text-underline-offset:3px;}
+
+/* 登录/注册页的彩色横幅。 */
+.oj-hero {position:relative; overflow:hidden; min-height:150px; display:flex; align-items:center;
+  padding:30px 36px; margin:0 0 1.3rem; border-radius:20px; color:#fff;
+  background:linear-gradient(125deg,#0ea5e9 0%,#4f46e5 46%,#8b5cf6 75%,#ec4899 115%);
+  box-shadow:0 18px 38px rgba(79,70,229,.28); isolation:isolate;}
+.oj-hero::before {content:""; position:absolute; inset:0;
+  background:linear-gradient(110deg,rgba(255,255,255,.13),transparent 45%,rgba(255,255,255,.07)); z-index:-1;}
+.oj-hero-copy {position:relative; z-index:2;}
+.oj-hero-kicker {display:inline-block; padding:4px 10px; margin-bottom:9px; border-radius:999px;
+  background:rgba(255,255,255,.16); border:1px solid rgba(255,255,255,.22); font-size:.72rem;
+  font-weight:700; letter-spacing:.12em; text-transform:uppercase;}
+.oj-hero-title {font-size:1.72rem; font-weight:850; letter-spacing:-.02em;}
+.oj-hero-sub {opacity:.88; margin-top:5px;}
+.oj-orb {position:absolute; border-radius:50%; background:rgba(255,255,255,.11); border:1px solid rgba(255,255,255,.12);}
+.oj-orb.one {width:230px;height:230px;right:65px;top:-105px;}
+.oj-orb.two {width:125px;height:125px;right:205px;bottom:-70px;}
+.oj-orb.three {width:66px;height:66px;right:24px;bottom:18px;}
+.oj-code-mark {position:absolute; right:78px; top:47px; color:rgba(255,255,255,.78);
+  font:800 2.2rem/1 ui-monospace,monospace; letter-spacing:.1em; transform:rotate(-5deg);}
+
+@media (max-width: 760px) {
+  .block-container {margin-top:.5rem; padding:1.4rem 1rem 2rem; border-radius:16px;}
+  .oj-hero {padding:24px 22px; min-height:130px;}
+  .oj-code-mark {display:none;}
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {scroll-behavior:auto !important; transition:none !important;}
+}
 </style>
 """
 
 _HERO = """
-<div style="position: relative; overflow: hidden; background: linear-gradient(135deg, #3498db, #5eb0ec);
-            border-radius: 14px; padding: 26px 32px; color: #fff; margin: 0 0 1.1rem;
-            box-shadow: 0 8px 24px rgba(52, 152, 219, .25);">
-  <div style="position: absolute; width: 200px; height: 200px; border-radius: 50%;
-              background: rgba(255, 255, 255, .09); top: -70px; right: 90px;"></div>
-  <div style="position: absolute; width: 120px; height: 120px; border-radius: 50%;
-              background: rgba(255, 255, 255, .08); bottom: -45px; right: 240px;"></div>
-  <div style="position: absolute; width: 56px; height: 56px; border-radius: 50%;
-              background: rgba(255, 255, 255, .12); top: 16px; right: -14px;"></div>
-  <div style="position: relative; font-size: 1.45rem; font-weight: 800;">⚖️ Online Judge</div>
-  <div style="position: relative; opacity: .92; margin-top: 4px;">清华 Python 课程 · 实验二：在线评测系统</div>
+<div class="oj-hero">
+  <span class="oj-orb one"></span>
+  <span class="oj-orb two"></span>
+  <span class="oj-orb three"></span>
+  <span class="oj-code-mark">&lt;/&gt;</span>
+  <div class="oj-hero-copy">
+    <div class="oj-hero-kicker">Code · Judge · Improve</div>
+    <div class="oj-hero-title">⚖️ Online Judge</div>
+  </div>
 </div>
 """
 
@@ -292,20 +494,30 @@ def _inject_ui():
 def render_sidebar() -> str:
     me = st.session_state.get("me")
     with st.sidebar:
-        st.markdown("## ⚖️ Online Judge")
-        st.caption("FastAPI 异步 OJ · Streamlit 前端")
+        st.markdown(
+            '<div class="oj-brand"><div class="oj-brand-mark">⚖</div>'
+            '<div><div class="oj-brand-name">Online Judge</div>'
+            '<div class="oj-brand-sub">Learn · Code · Grow</div></div></div>',
+            unsafe_allow_html=True,
+        )
         st.divider()
         if me:
-            st.markdown(f"**{me.get('username')}**　{'🔑 管理员' if me.get('role') == 'admin' else '👤 用户'}")
+            role = "🔑 管理员" if me.get("role") == "admin" else "👤 用户"
+            st.markdown(
+                f'<div class="oj-user-card"><strong>{html.escape(str(me.get("username", "")))}</strong>'
+                f'<br><span style="font-size:.78rem;opacity:.72">{role}</span></div>',
+                unsafe_allow_html=True,
+            )
             st.divider()
-            pages = ["📋 题目", "📜 评测记录", "🙍 个人主页", "✨ AI 命题"]
+            pages = ["📋 题目", "📜 评测记录", "🙍 个人主页"]
             if me.get("role") == "admin":
-                pages += ["🛠 用户管理", "🛡 访问审计"]
+                pages += ["🧩 语言管理", "✨ AI 命题", "🛠 用户管理", "🛡 访问审计"]
             # 导航用 key 直接绑定 session_state，只播种默认值一次；
             # 不要每次 rerun 传 index=旧值——会覆盖用户刚点击的选项，导致需双击才能切页。
             if st.session_state.get("nav") not in pages:
                 st.session_state["nav"] = pages[0]
-            page = st.radio("导航", pages, key="nav", label_visibility="collapsed")
+            page = st.radio("导航", pages, key="nav", label_visibility="collapsed",
+                            on_change=_sidebar_route_changed)
             if st.button("退出登录", width="stretch"):
                 try:
                     api("POST", "/api/auth/logout")
@@ -326,7 +538,7 @@ def page_login():
     with st.form("login-form"):
         username = st.text_input("用户名")
         password = st.text_input("密码", type="password")
-        submitted = st.form_submit_button("登录", width="stretch")
+        submitted = st.form_submit_button("登录", type="primary", width="stretch")
     if not submitted:
         return
     if not username.strip() or not password:
@@ -355,7 +567,7 @@ def page_register():
     with st.form("register-form"):
         username = st.text_input("用户名（3–40 字符）")
         password = st.text_input("密码（至少 6 位）", type="password")
-        submitted = st.form_submit_button("注册", width="stretch")
+        submitted = st.form_submit_button("注册", type="primary", width="stretch")
     if not submitted:
         return
     if not (3 <= len(username.strip()) <= 40):
@@ -395,6 +607,28 @@ def page_profile():
     c1.metric("提交数", submit_count)
     c2.metric("通过题数", resolve_count)
     c3.metric("通过率", rate)
+
+    st.divider()
+    st.subheader("修改用户名")
+    with st.form("rename-user-form"):
+        username = st.text_input("新用户名（3–40 字符）", value=u["username"])
+        submitted = st.form_submit_button("保存用户名", type="primary")
+    if submitted:
+        username = username.strip()
+        if not 3 <= len(username) <= 40:
+            st.error("用户名长度需在 3–40 字符之间。")
+        elif username == u["username"]:
+            st.info("用户名未发生变化。")
+        else:
+            try:
+                data = api("PUT", f"/api/users/{me['user_id']}/username",
+                           json={"username": username})
+                st.session_state["me"]["username"] = data["username"]
+                st.success("用户名已更新。")
+                time.sleep(0.4)
+                st.rerun()
+            except ApiError as e:
+                friendly_error(e)
 
 
 def page_admin_users():
@@ -456,6 +690,69 @@ def page_admin_users():
                     st.rerun()
                 except ApiError as e:
                     friendly_error(e)
+
+
+def page_languages():
+    """管理员维护评测语言注册表。"""
+    st.title("🧩 语言管理")
+    st.caption("评测器根据这里的配置自动选择源码扩展名、编译命令和运行命令。")
+
+    try:
+        names = (api("GET", "/api/languages/") or {}).get("name") or []
+    except ApiError as e:
+        friendly_error(e)
+        return
+
+    st.subheader("当前支持的语言")
+    if names:
+        rows = "".join(
+            f"<tr><td>{index}</td><td class='oj-mono'>{html.escape(str(name))}</td></tr>"
+            for index, name in enumerate(names, 1)
+        )
+        st.markdown(_html_table(["序号", "语言名称"], rows), unsafe_allow_html=True)
+    else:
+        st.info("当前还没有已注册的语言。")
+
+    st.divider()
+    st.subheader("注册新语言")
+    st.caption("命令不会经 shell 执行；请使用 {src} 表示源码路径，使用 {exe} 表示可执行文件路径。")
+    with st.form("language-form"):
+        c1, c2 = st.columns(2)
+        name = c1.text_input("语言名称", placeholder="例如 go")
+        file_ext = c2.text_input("源码扩展名", placeholder="例如 .go")
+        compile_cmd = st.text_input("编译命令（解释型语言可留空）", placeholder="例如 go build -o {exe} {src}")
+        run_cmd = st.text_input("运行命令", placeholder="例如 {exe} 或 python3 {src}")
+        c3, c4 = st.columns(2)
+        time_limit = c3.number_input("默认时间限制（秒，0 表示使用系统默认）", min_value=0.0,
+                                     value=0.0, step=0.5)
+        memory_limit = c4.number_input("默认内存限制（MB，0 表示使用系统默认）", min_value=0,
+                                       value=0, step=1)
+        submitted = st.form_submit_button("注册语言", type="primary", width="stretch")
+
+    if not submitted:
+        return
+    if not name.strip() or not file_ext.strip() or not run_cmd.strip():
+        st.error("语言名称、源码扩展名和运行命令不能为空。")
+        return
+
+    body = {
+        "name": name.strip(),
+        "file_ext": file_ext.strip(),
+        "compile_cmd": compile_cmd.strip() or None,
+        "run_cmd": run_cmd.strip(),
+    }
+    if time_limit > 0:
+        body["time_limit"] = float(time_limit)
+    if memory_limit > 0:
+        body["memory_limit"] = int(memory_limit)
+    try:
+        api("POST", "/api/languages/", json=body)
+    except ApiError as e:
+        friendly_error(e)
+        return
+    st.success(f"语言 {name.strip()} 注册成功。")
+    time.sleep(0.4)
+    st.rerun()
 
 
 def page_audit_logs():
@@ -541,36 +838,24 @@ def _problem_list():
         friendly_error(e)
         return
     st.caption(f"共 {len(problems)} 题")
-    if st.button("➕ 新建题目", type="primary"):
-        st.session_state["prob_view"] = "new"
-        st.rerun()
+    st.link_button("➕ 新建题目", _route_href("problems", view="new"), type="primary")
     if not problems:
         st.info("暂无题目，点击上方按钮创建第一道题。")
         return
     # 洛谷题单风格列表（列表接口仅返回 id/title）
     rows = "".join(
-        f"<tr><td class='oj-mono'>{html.escape(p['id'])}</td>"
-        f"<td>{html.escape(p['title'])}</td></tr>"
+        f"<tr><td class='oj-mono'>{html.escape(str(p['id']))}</td>"
+        f"<td><a class='oj-problem-link' target='_self' "
+        f"href='{html.escape(_route_href('problems', problem=p['id']), quote=True)}'>"
+        f"{html.escape(p['title'])}</a></td></tr>"
         for p in problems)
     st.markdown(_html_table(["题目 ID", "标题"], rows), unsafe_allow_html=True)
-    sel = st.selectbox(
-        "查看题目详情", [p["id"] for p in problems],
-        format_func=lambda pid: f"{pid} · {next((p['title'] for p in problems if p['id'] == pid), '')}",
-    )
-    if st.button("打开详情"):
-        st.session_state["prob_view"] = "detail"
-        st.session_state["prob_id"] = sel
-        st.session_state.pop("confirm_delete", None)
-        st.rerun()
 
 
 def _problem_detail():
     pid = st.session_state.get("prob_id")
     me = st.session_state.get("me")
-    if st.button("← 返回列表"):
-        st.session_state["prob_view"] = "list"
-        st.session_state.pop("confirm_delete", None)
-        st.rerun()
+    st.link_button("← 返回列表", _route_href("problems"))
     try:
         p = api("GET", f"/api/problems/{pid}")
     except ApiError as e:
@@ -617,13 +902,8 @@ def _problem_detail():
         _submit_panel(pid)
 
     c1, c2, c3 = st.columns(3)
-    if c1.button("✏️ 编辑题目", width="stretch"):
-        st.session_state["prob_view"] = "edit"
-        st.rerun()
-    if c2.button("📜 本题提交记录", width="stretch"):
-        st.session_state["sub_filter_problem"] = pid
-        st.session_state["nav"] = "📜 评测记录"
-        st.rerun()
+    c1.link_button("✏️ 编辑题目", _route_href("problems", problem=pid, view="edit"), width="stretch")
+    c2.link_button("📜 本题提交记录", _route_href("submissions", problem=pid), width="stretch")
     if me.get("role") == "admin":
         if c3.button("🗑 删除题目", width="stretch"):
             st.session_state["confirm_delete"] = pid
@@ -634,9 +914,9 @@ def _problem_detail():
                 try:
                     api("DELETE", f"/api/problems/{pid}")
                     st.session_state.pop("confirm_delete", None)
-                    st.session_state["prob_view"] = "list"
                     st.success("已删除。")
                     time.sleep(0.5)
+                    _set_route("problems")
                     st.rerun()
                 except ApiError as e:
                     friendly_error(e)
@@ -675,9 +955,8 @@ def _problem_form():
             friendly_error(e)
             return
     st.title("✏️ 编辑题目" if is_edit else "➕ 新建题目")
-    if st.button("← 返回"):
-        st.session_state["prob_view"] = "list" if not is_edit else "detail"
-        st.rerun()
+    back_href = _route_href("problems", problem=pid) if is_edit else _route_href("problems")
+    st.link_button("← 返回", back_href)
 
     with st.form("problem-form"):
         c1, c2 = st.columns(2)
@@ -711,8 +990,8 @@ def _problem_form():
         return
     # —— 提交前格式检查（任务 2）——
     errors = []
-    if not pid_in.strip():
-        errors.append("ID 不能为空。")
+    if not _valid_problem_id(pid_in.strip()):
+        errors.append("题目 ID 必须是数字。")
     if not title.strip():
         errors.append("标题不能为空。")
     for name, value in (("题目描述", description), ("输入格式", input_description),
@@ -768,9 +1047,8 @@ def _problem_form():
     except ApiError as e:
         friendly_error(e)
         return
-    st.session_state["prob_id"] = pid_in.strip()
-    st.session_state["prob_view"] = "detail"
     time.sleep(0.5)
+    _set_route("problems", problem=pid_in.strip())
     st.rerun()
 
 
@@ -820,7 +1098,7 @@ def page_submissions():
 def _submission_list():
     me = st.session_state.get("me")
     st.title("📜 评测记录")
-    preset_problem = st.session_state.pop("sub_filter_problem", "")
+    preset_problem = st.session_state.get("sub_filter_problem", "")
     c1, c2 = st.columns(2)
     status = c1.selectbox("状态", ["全部", "pending", "success", "error"],
                           format_func=lambda x: {"全部": "全部", "pending": "等待中",
@@ -871,8 +1149,7 @@ def _submission_list():
     sel = st.selectbox("查看提交详情", [s["submission_id"] for s in subs],
                        format_func=lambda x: f"#{x}")
     if st.button("打开详情"):
-        st.session_state["sub_view"] = "detail"
-        st.session_state["sub_id"] = sel
+        _set_route("submissions", submission=sel, problem=problem.strip())
         st.rerun()
 
 
@@ -880,9 +1157,7 @@ def _submission_list():
 def _submission_detail():
     sid = st.session_state.get("sub_id")
     me = st.session_state.get("me")
-    if st.button("← 返回列表"):
-        st.session_state["sub_view"] = "list"
-        st.rerun()
+    st.link_button("← 返回列表", _route_href("submissions", problem=st.query_params.get("problem", "")))
     try:
         s = api("GET", f"/api/submissions/{sid}")
     except ApiError as e:
@@ -1049,10 +1324,8 @@ def _render_ai_result(result: dict, problem_id: str | None):
             else:
                 new_id = api("POST", "/api/problems/", json=result)["id"]
                 st.success(f"已保存为新题目 {new_id}。")
-            st.session_state["prob_id"] = problem_id or result.get("id")
-            st.session_state["prob_view"] = "detail"
-            st.session_state["nav"] = "📋 题目"
             time.sleep(0.4)
+            _set_route("problems", problem=problem_id or result.get("id"))
             st.rerun()
         except ApiError as e:
             friendly_error(e)
@@ -1061,9 +1334,7 @@ def _render_ai_result(result: dict, problem_id: str | None):
 @st.fragment(run_every=1.5)
 def _ai_task_detail():
     tid = st.session_state.get("ai_task_id")
-    if st.button("← 返回 AI 命题页"):
-        st.session_state["ai_view"] = "home"
-        st.rerun()
+    st.link_button("← 返回 AI 命题页", _route_href("ai"))
     try:
         d = api("GET", f"/api/ai/problem-tasks/{tid}")
     except ApiError as e:
@@ -1200,10 +1471,9 @@ def _ai_home():
                         "requirement": requirement.strip(),
                         "problem_id": pid or None,
                     })
-                    st.session_state["ai_task_id"] = resp["task_id"]
-                    st.session_state["ai_view"] = "task"
                     st.success("任务已创建，开始生成…")
                     time.sleep(0.4)
+                    _set_route("ai", task=resp["task_id"])
                     st.rerun()
                 except ApiError as e:
                     friendly_error(e)
@@ -1229,8 +1499,7 @@ def _ai_home():
                 unsafe_allow_html=True)
     sel = st.selectbox("查看任务详情", [t["task_id"] for t in tasks], format_func=lambda x: f"#{x}")
     if st.button("打开详情"):
-        st.session_state["ai_task_id"] = sel
-        st.session_state["ai_view"] = "task"
+        _set_route("ai", task=sel)
         st.rerun()
 
 
@@ -1239,6 +1508,13 @@ def _ai_home():
 def main():
     _inject_ui()
     _restore_login()
+    # 登录后的每次完整渲染都同步浏览器 Cookie。登录表单会立即 rerun，
+    # 因此不能只依赖提交表单当次短暂挂载的组件来完成持久化。
+    token = None
+    if st.session_state.get("me"):
+        token = st.session_state.get("cookies", {}).get(SESSION_COOKIE)
+    write_session_cookie(token, config.SESSION_TTL_SECONDS)
+    _restore_route()
     page = render_sidebar()
     if page == "🔑 登录":
         page_login()
@@ -1248,6 +1524,8 @@ def main():
         page_problems()
     elif page == "📜 评测记录":
         page_submissions()
+    elif page == "🧩 语言管理":
+        page_languages()
     elif page == "🙍 个人主页":
         page_profile()
     elif page == "🛠 用户管理":

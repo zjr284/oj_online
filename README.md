@@ -2,10 +2,12 @@
 
 基于 FastAPI 异步接口的在线评测系统。**覆盖 Step 1–6 与 Advance AI 智能命题**：
 题目管理、评测引擎（资源限制与进程清理）、评测管理（提交/重判/限流）、
-用户与权限管理、评测日志（明细可见性 + 访问审计）、
+用户与权限管理、语言查询与动态注册、评测日志（明细可见性 + 访问审计）、
 AI 命题（可配置模型/实时进度/中断/用量计费）与配套前端页面。
 
 ## 快速开始
+
+运行环境需要 Python 3.10+；C++ 评测需要 GCC/G++ 9+（内置配置使用 C++14）。
 
 ```bash
 python3 -m venv .venv
@@ -61,7 +63,7 @@ app/
 │   ├── problems.py      #   Step 1 题目 CRUD + Step 5 log_visibility ✅
 │   ├── auth.py          #   Step 4 登录/登出 ✅
 │   ├── users.py         #   Step 4 注册/角色/用户查询/操作日志 ✅
-│   ├── languages.py     #   Step 2 语言注册表（登录用户可注册） ✅
+│   ├── languages.py     #   Step 2 语言注册表（管理员可注册） ✅
 │   ├── submissions.py   #   Step 3 提交/列表/详情/rejudge/限流 + Step 5 log ✅
 │   ├── logs.py          #   Step 5 访问审计 ✅
 │   ├── maintenance.py   #   测试辅助 /api/reset/ ✅
@@ -69,7 +71,7 @@ app/
 └── judge/
     └── runner.py        # 判题引擎：进程执行/资源限制/输出比对（Step 2） ✅
 
-data/problems/           # 题目配置文件（sum_2 / P1001 示例）
+data/problems/           # 题目配置文件（1002 / 1001 示例）
 app.py                   # Streamlit 前端（题目/评测/用户管理/访问审计/AI 命题页面）
 tests/                   # pytest 测试（含真实 Python/C++ 判题、AI 模拟接口、Streamlit 交互与文档符合性回归）
 ```
@@ -95,14 +97,19 @@ models   →  数据结构（ORM / 文件）
    输出逐行比对（忽略行尾空白与末尾空行）→ AC/WA；
 3. 每个测试点 10 分，`score = AC 数 × 10`。
 
+内置语言为 Python 3 和 C++14。管理员可在前端“语言管理”页面查询、注册语言；后端对应
+`GET /api/languages/` 和 `POST /api/languages/`。语言配置保存在数据库中，提交时按 `language` 字段
+读取 `file_ext`、`compile_cmd`、`run_cmd` 及默认资源限制，因此新增配置可以立即参与评测。
+
 `success` 表示评测正常完成，包括得到 WA/TLE/MLE/RE 的提交；`error` 用于编译失败或评测系统错误。
 每题全部测试点 AC 才计入用户 `resolve_count`。C++ 编译成功和失败均返回结构化 `compile_info`。
 
 重判先终止旧进程并清空旧分数和明细，再调度新任务；服务重启会修正旧版状态标记并重判遗留 pending 提交。
 重置接口会停止后台评测和 AI 任务，清除会话、题目、记录、限流与 AI 配置，再恢复初始管理员和默认语言。
 
-前端使用 `st.fragment` 每 1.5 秒查询状态，不整页刷新。会话 Cookie 仅在当前 Streamlit 会话内传递；
-整页刷新后需重新登录。旧版 URL 中的 `oj_s` / `oj_u` 凭据会被移除。
+前端使用 `st.fragment` 每 1.5 秒查询状态，不整页刷新。浏览器保存不透明会话 Cookie，整页刷新后经
+`GET /api/auth/me` 校验并恢复身份。页面与详情位置写入 URL，浏览器前进/后退会恢复对应界面；
+旧版 URL 中的 `oj_s` / `oj_u` 凭据会被移除。
 
 ## 关键约定（来自实验要求）
 
@@ -162,7 +169,7 @@ models   →  数据结构（ORM / 文件）
 生成可导入的性能测试配置（输出到 Git 忽略目录，不覆盖现有题目）：
 
 ```bash
-.venv/bin/python scripts/build_find_range_stress.py
+.venv/bin/python scripts/build_1003_stress.py
 # 最大规模：增加 --n 1000000 --q 100000
 ```
 

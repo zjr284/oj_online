@@ -1,5 +1,5 @@
 {
-  "id": "P1001",
+  "id": "1001",
   "title": "A+B Problem",
   "description": "输入两个整数 a, b，输出它们的和（|a|, |b| ≤ 10^9）。",
   "input_description": "两个以空格分开的整数 a, b。",

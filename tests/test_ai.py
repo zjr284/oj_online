@@ -8,7 +8,7 @@ from app.main import app
 from conftest import login
 
 PROBLEM = {
-    "id": "sum_2",
+    "id": "1002",
     "title": "两数之和",
     "description": "输入两个整数，输出它们的和。",
     "input_description": "一行两个整数。",
@@ -33,7 +33,7 @@ CONFIG = {
 }
 
 GENERATED = {
-    "id": "ai_gen_1",
+    "id": "2001",
     "title": "AI 生成的题目",
     "description": "题目描述",
     "input_description": "输入格式",
@@ -163,7 +163,7 @@ async def test_no_config_and_missing_problem(client):
     assert resp.status_code == 400
     await _config(client)
     # 参考题目不存在 → 404（api.md）
-    resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "出一题", "problem_id": "nope"})
+    resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "出一题", "problem_id": "9999"})
     assert resp.status_code == 404
     # requirement 缺失 → 400
     resp = await client.post("/api/ai/problem-tasks/", json={})
@@ -183,7 +183,7 @@ async def test_task_flow_cost_and_import(client, monkeypatch):
 
     d = await _wait_task(client, tid)
     assert d["status"] == "done"
-    assert d["result"]["id"] == "ai_gen_1"
+    assert d["result"]["id"] == "2001"
     # 费用公式：输入Token/单位×输入单价 + 输出Token/单位×输出单价
     u = d["usage"]
     assert u["input_tokens"] == 100 and u["output_tokens"] == 200 and u["total_tokens"] == 300
@@ -191,12 +191,12 @@ async def test_task_flow_cost_and_import(client, monkeypatch):
     assert u["currency"] == "CNY" and u["estimated"] is False
 
     # 生成结果不直接写题库（与基础功能解耦，经已有接口导入）
-    resp = await client.get("/api/problems/ai_gen_1")
+    resp = await client.get("/api/problems/2001")
     assert resp.status_code == 404
     # 用户可经既有 POST /api/problems/ 导入生成结果（R1 衔接）
     resp = await client.post("/api/problems/", json=d["result"])
     assert resp.status_code == 200
-    resp = await client.get("/api/problems/ai_gen_1")
+    resp = await client.get("/api/problems/2001")
     assert resp.status_code == 200
 
 
@@ -206,28 +206,22 @@ async def test_task_list_and_permissions(client, monkeypatch):
     await client.post("/api/users/", json={"username": "carol", "password": "pw123456"})
     _mock_model(monkeypatch)
 
-    # bob 创建任务
+    # 普通用户不能使用任何 AI 命题接口。
     await login(client, "bob", "pw123456")
+    assert (await client.get("/api/ai/model-config")).status_code == 403
+    assert (await client.put("/api/ai/model-config", json=CONFIG)).status_code == 403
+    assert (await client.post("/api/ai/problem-tasks/", json={"requirement": "出一道题"})).status_code == 403
+    assert (await client.get("/api/ai/problem-tasks/")).status_code == 403
+
+    # 管理员可以创建并查看任务；列表不含 result。
+    await login(client, "admin", "admintestpassword")
     resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "出一道题"})
     tid = resp.json()["data"]["task_id"]
     await _wait_task(client, tid)
-
-    # bob 可见自己的任务；列表不含 result
-    resp = await client.get("/api/ai/problem-tasks/")
-    assert [t["task_id"] for t in resp.json()["data"]] == [tid]
-    assert "result" not in resp.json()["data"][0]
-
-    # carol 无权查看/取消（403）
-    await login(client, "carol", "pw123456")
-    assert (await client.get(f"/api/ai/problem-tasks/{tid}")).status_code == 403
-    assert (await client.put(f"/api/ai/problem-tasks/{tid}/cancel")).status_code == 403
-    assert (await client.get("/api/ai/problem-tasks/")).json()["data"] == []
-
-    # 管理员可见全部
-    await login(client, "admin", "admintestpassword")
     assert (await client.get(f"/api/ai/problem-tasks/{tid}")).status_code == 200
     resp = await client.get("/api/ai/problem-tasks/")
     assert len(resp.json()["data"]) == 1
+    assert "result" not in resp.json()["data"][0]
     # 不存在的任务 → 404
     assert (await client.get("/api/ai/problem-tasks/99999")).status_code == 404
 

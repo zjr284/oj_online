@@ -17,7 +17,7 @@ from app.models import TestcaseResult as _TestcaseResult   # 别名避免被 pyt
 from conftest import login
 
 PROB = {
-    "id": "p1", "title": "t", "description": "d", "input_description": "i",
+    "id": "1001", "title": "t", "description": "d", "input_description": "i",
     "output_description": "o", "constraints": "c",
     "samples": [{"input": "1", "output": "1"}],
     "testcases": [{"input": "1", "output": "1"}],
@@ -29,7 +29,7 @@ def _new_client() -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
-async def _seed(client, problem_id="p1"):
+async def _seed(client, problem_id="1001"):
     """管理员建题 + 注册 alice/bob + 直接写入一条已评测提交（含 3 个测点明细）。
 
     直接写库避免等待评测，log 接口只读数据库。
@@ -79,7 +79,7 @@ async def test_log_other_not_public_403_and_audited(client):
     assert (await _audit_count()) == before + 1
     async with SessionLocal() as db:
         row = (await db.scalars(select(AccessLog).order_by(AccessLog.id.desc()))).first()
-    assert (row.user_id, row.problem_id, row.action, row.status) == (3, "p1", "view_logs", 403)
+    assert (row.user_id, row.problem_id, row.action, row.status) == (3, "1001", "view_logs", 403)
 
 
 async def test_log_admin_sees_details(client):
@@ -94,7 +94,7 @@ async def test_log_admin_sees_details(client):
 async def test_log_public_everyone_sees_details(client):
     """公开后：所有登录用户可见 details；但 Step 2/3 的简单结果仍不可见。"""
     await _seed(client)
-    await client.put("/api/problems/p1/log_visibility", json={"public_cases": True})
+    await client.put("/api/problems/1001/log_visibility", json={"public_cases": True})
 
     await login(client, "bob", "secret1")
     resp = await client.get("/api/submissions/100/log")
@@ -110,8 +110,8 @@ async def test_log_public_everyone_sees_details(client):
 async def test_log_visibility_revoke(client):
     """公开再关闭：他人恢复 403，本人恢复无 details。"""
     await _seed(client)
-    await client.put("/api/problems/p1/log_visibility", json={"public_cases": True})
-    await client.put("/api/problems/p1/log_visibility", json={"public_cases": False})
+    await client.put("/api/problems/1001/log_visibility", json={"public_cases": True})
+    await client.put("/api/problems/1001/log_visibility", json={"public_cases": False})
 
     await login(client, "bob", "secret1")
     assert (await client.get("/api/submissions/100/log")).status_code == 403
@@ -147,25 +147,25 @@ async def test_log_200_audited(client):
 
 async def test_log_visibility_response_and_persist(client):
     await _seed(client)
-    resp = await client.put("/api/problems/p1/log_visibility", json={"public_cases": True})
+    resp = await client.put("/api/problems/1001/log_visibility", json={"public_cases": True})
     assert resp.status_code == 200
     assert resp.json() == {
         "code": 200, "msg": "log visibility updated",
-        "data": {"problem_id": "p1", "public_cases": True},
+        "data": {"problem_id": "1001", "public_cases": True},
     }
     # 持久化：题目详情反映 public_cases
-    detail = (await client.get("/api/problems/p1")).json()["data"]
+    detail = (await client.get("/api/problems/1001")).json()["data"]
     assert detail["public_cases"] is True
 
 
 async def test_log_visibility_default_false(client):
     await _seed(client)
     # 新建题目 public_cases 默认 False
-    detail = (await client.get("/api/problems/p1")).json()["data"]
+    detail = (await client.get("/api/problems/1001")).json()["data"]
     assert detail["public_cases"] is False
     # 空 body（选填）→ 恢复 False
-    await client.put("/api/problems/p1/log_visibility", json={"public_cases": True})
-    resp = await client.put("/api/problems/p1/log_visibility", json={})
+    await client.put("/api/problems/1001/log_visibility", json={"public_cases": True})
+    resp = await client.put("/api/problems/1001/log_visibility", json={})
     assert resp.status_code == 200
     assert resp.json()["data"]["public_cases"] is False
 
@@ -174,18 +174,18 @@ async def test_log_visibility_permissions(client):
     await _seed(client)
     # 未登录 401 / 普通用户 403（仅管理员）
     async with _new_client() as anon:
-        assert (await anon.put("/api/problems/p1/log_visibility", json={"public_cases": True})).status_code == 401
+        assert (await anon.put("/api/problems/1001/log_visibility", json={"public_cases": True})).status_code == 401
     await login(client, "alice", "secret1")
-    assert (await client.put("/api/problems/p1/log_visibility", json={"public_cases": True})).status_code == 403
+    assert (await client.put("/api/problems/1001/log_visibility", json={"public_cases": True})).status_code == 403
 
 
 async def test_log_visibility_errors(client):
     await _seed(client)
     # 题目不存在 404；非法 id 400（路径校验与其它题目接口一致）；非 bool 400
-    assert (await client.put("/api/problems/nope/log_visibility", json={"public_cases": True})).status_code == 404
+    assert (await client.put("/api/problems/9999/log_visibility", json={"public_cases": True})).status_code == 404
     assert (await client.put("/api/problems/%2E%2E/log_visibility", json={"public_cases": True})).status_code == 400
     assert (await client.put("/api/problems/a%20b/log_visibility", json={"public_cases": True})).status_code == 400
-    assert (await client.put("/api/problems/p1/log_visibility", json={"public_cases": "maybe"})).status_code == 400
+    assert (await client.put("/api/problems/1001/log_visibility", json={"public_cases": "maybe"})).status_code == 400
 
 
 # ---- 日志访问审计 ----
@@ -213,7 +213,7 @@ async def test_access_logs_shape(client):
         assert row["action"] == "view_logs"
         assert row["user_id"] == str(row["user_id"])
         assert row["status"] in ("200", "403")
-        assert row["problem_id"] == "p1"
+        assert row["problem_id"] == "1001"
         assert row["time"]
 
 
@@ -225,13 +225,13 @@ async def test_access_logs_filters(client):
     rows = (await client.get("/api/logs/access/", params={"user_id": "abc"})).json()["data"]
     assert rows == []
 
-    rows = (await client.get("/api/logs/access/", params={"problem_id": "p1"})).json()["data"]
+    rows = (await client.get("/api/logs/access/", params={"problem_id": "1001"})).json()["data"]
     assert len(rows) == 4
-    rows = (await client.get("/api/logs/access/", params={"problem_id": "nope"})).json()["data"]
+    rows = (await client.get("/api/logs/access/", params={"problem_id": "9999"})).json()["data"]
     assert rows == []
 
     # 组合筛选
-    rows = (await client.get("/api/logs/access/", params={"user_id": "3", "problem_id": "p1"})).json()["data"]
+    rows = (await client.get("/api/logs/access/", params={"user_id": "3", "problem_id": "1001"})).json()["data"]
     assert len(rows) == 1 and rows[0]["status"] == "403"
 
 

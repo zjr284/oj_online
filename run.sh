@@ -18,7 +18,7 @@ trap 'exit 130' INT TERM
 
 wait_url() {  # 等待 URL 可访问（最多 20s）
   for _ in $(seq 1 40); do
-    curl -s -o /dev/null --max-time 1 "$1" 2>/dev/null && return 0
+    curl --noproxy '*' -s -o /dev/null --max-time 1 "$1" 2>/dev/null && return 0
     sleep 0.5
   done
   return 1
@@ -26,7 +26,7 @@ wait_url() {  # 等待 URL 可访问（最多 20s）
 
 echo "== Online Judge 一键启动 =="
 
-if curl -s -o /dev/null --max-time 1 "$BACKEND_URL" 2>/dev/null; then
+if curl --noproxy '*' -s -o /dev/null --max-time 1 "$BACKEND_URL" 2>/dev/null; then
   echo "✓ 后端已在运行（8000）"
 else
   .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 &
@@ -39,7 +39,7 @@ else
   fi
 fi
 
-if curl -s -o /dev/null --max-time 1 "$FRONTEND_URL" 2>/dev/null; then
+if curl --noproxy '*' -s -o /dev/null --max-time 1 "$FRONTEND_URL" 2>/dev/null; then
   echo "✓ Streamlit 前端已在运行（8501）"
 else
   .venv/bin/streamlit run app.py --server.headless true --server.port 8501 &

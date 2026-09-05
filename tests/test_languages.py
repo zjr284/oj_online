@@ -7,7 +7,9 @@ import asyncio
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.database import SessionLocal
 from app.main import app
+from app.models import Language
 from app.services.language_service import ensure_languages
 from conftest import login
 
@@ -28,6 +30,25 @@ async def test_list_empty_when_no_languages(client):
     assert resp.json()["data"] == {"name": []}
 
 
+async def test_default_cpp_uses_cpp14_and_repairs_stale_builtin_config(client):
+    await ensure_languages()
+    async with SessionLocal() as db:
+        cpp = await db.get(Language, "cpp")
+        assert cpp is not None
+        assert cpp.file_ext == ".cpp"
+        assert "-std=c++14" in cpp.compile_cmd
+        assert cpp.run_cmd == "{exe}"
+        cpp.compile_cmd = "g++ -std=c++17 {src} -o {exe}"
+        cpp.run_cmd = "./old-main"
+        await db.commit()
+
+    await ensure_languages()
+    async with SessionLocal() as db:
+        cpp = await db.get(Language, "cpp")
+        assert "-std=c++14" in cpp.compile_cmd
+        assert cpp.run_cmd == "{exe}"
+
+
 async def test_register_success_and_list_append(client):
     """注册成功：msg/data 对齐 api.md；列表按注册顺序追加。"""
     await login(client, "admin", "admintestpassword")
@@ -43,6 +64,14 @@ async def test_register_requires_login(client):
     resp = await client.post("/api/languages/", json=BASE)
     assert resp.status_code == 401
     assert resp.json() == {"code": 401, "msg": "not logged in", "data": None}
+
+
+async def test_regular_logged_in_user_cannot_register(client):
+    await client.post("/api/users/", json={"username": "alice", "password": "secret1"})
+    await login(client, "alice", "secret1")
+    resp = await client.post("/api/languages/", json=BASE)
+    assert resp.status_code == 403
+    assert (await client.get("/api/languages/")).json()["data"]["name"] == []
 
 
 async def test_register_banned_user_forbidden(client):

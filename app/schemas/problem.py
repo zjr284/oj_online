@@ -4,13 +4,13 @@
 可选字段缺失时自动填充默认值（str → ""，list → []），
 与「默认字段返回类型默认值」的要求对应。
 
-安全：id 限制为安全字符集（杜绝经请求体 id 的路径穿越写入/删除任意 .json 文件）；
+安全：id 统一限制为十进制数字（同时杜绝经请求体 id 的路径穿越）；
 time/memory 限制必须为正数。
 """
 from pydantic import BaseModel, Field
 
-# 题目 id 只能由字母数字与 _- 组成：既保证文件名安全（不能含 / 或 ..），也符合 api.md 示例
-PROBLEM_ID_RE = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+# 题目 id 统一为 1–18 位十进制数字，作为安全的 JSON 文件名。
+PROBLEM_ID_RE = r"^[0-9]{1,18}$"
 
 
 class Sample(BaseModel):
@@ -26,7 +26,7 @@ class TestCase(BaseModel):
 
 class ProblemConfig(BaseModel):
     # ---- 必填字段 ----
-    id: str = Field(pattern=PROBLEM_ID_RE, description="题目唯一标识（字母数字与 _- 组成）")
+    id: str = Field(pattern=PROBLEM_ID_RE, description="题目唯一数字标识")
     title: str = Field(min_length=1)
     description: str = Field(min_length=1)
     input_description: str = Field(min_length=1)

@@ -13,6 +13,8 @@ from app.database import init_db
 from app.routers import ai, auth, languages, logs, maintenance, problems, submissions, users
 from app.services import ai_service, judge_service
 from app.services.language_service import ensure_languages
+from app.services.problem_migration import migrate_problem_references
+from app.services.problem_store import store
 from app.services.user_service import ensure_admin
 
 
@@ -21,6 +23,7 @@ async def lifespan(app: FastAPI):
     # 启动时：建表、创建数据目录、初始管理员与默认语言
     await init_db()
     config.PROBLEMS_DIR.mkdir(parents=True, exist_ok=True)
+    await migrate_problem_references(await store.migrate_numeric_ids())
     await ensure_admin()
     await ensure_languages()
     await judge_service.normalize_legacy_results()

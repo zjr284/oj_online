@@ -50,6 +50,24 @@ async def create_user(db: AsyncSession, username: str, password: str, role: str 
     return user
 
 
+async def rename_user(db: AsyncSession, user: User, username: str) -> User:
+    """修改用户名；用户 ID、密码和现有会话保持不变。"""
+    if not (3 <= len(username) <= 40):
+        raise ApiError(400, "username length must be between 3 and 40")
+    if username == user.username:
+        return user
+    if await db.scalar(select(User).where(User.username == username, User.id != user.id)) is not None:
+        raise ApiError(400, "username already exists")
+    user.username = username
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise ApiError(400, "username already exists")
+    await db.refresh(user)
+    return user
+
+
 async def user_stats(db: AsyncSession, user_id: int) -> tuple[int, int]:
     """返回 (submit_count, resolve_count)。
 

@@ -44,7 +44,7 @@ R3：模型调用期间 ticker 每 2s 推进度、cancel 推 final(cancelled) �
 前端提示不同模型不同时段价格可能不同）。
 
 实现细节备忘：
-- 题目/语言不存在 → 404（api.md 语义）；语言注册权限为**任意登录用户**（Step 2/4 要求）。
+- 题目/语言不存在 → 404（api.md 语义）；语言注册和 AI 命题权限仅限管理员。
 - 提交限流 `config.SUBMIT_RATE_LIMIT`（环境变量 `OJ_SUBMIT_RATE_LIMIT`），测试用 monkeypatch 收紧。
 - log 接口：details 仅管理员/公开题目可见；本人看未公开题目省略 details；
   403（已登录无权）与 200 都记 AccessLog；提交不存在返回 404 且不记审计。

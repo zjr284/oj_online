@@ -1,0 +1,4 @@
+# Allow commands in Codex's workspace-write sandbox to reach external sites.
+# Project-local configuration is loaded because this workspace is trusted.
+[sandbox_workspace_write]
+network_access = true
