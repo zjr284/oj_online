@@ -21,36 +21,6 @@ function setHeight() {
   }, "*");
 }
 
-function requestRerun() {
-  // 通过自定义组件值变化请求 Streamlit 重跑脚本。这与点击普通
-  // Streamlit 控件一样会保留当前 session_state，不会创建新会话。
-  const parentWindow = window.parent;
-  parentWindow.__ojHistorySequence = (parentWindow.__ojHistorySequence || 0) + 1;
-  parentWindow.postMessage({
-    isStreamlitMessage: true,
-    type: "streamlit:setComponentValue",
-    dataType: "json",
-    value: {
-      sequence: parentWindow.__ojHistorySequence,
-      href: parentWindow.location.href
-    }
-  }, "*");
-}
-
-function installHistoryListener() {
-  // query_params 会写入浏览器历史，但 popstate 本身不会触发
-  // Python 脚本重跑。通知 Streamlit rerun，由 app.py 按历史中的 URL 恢复界面。
-  try {
-    if (window.parent.__ojHistoryListener) {
-      window.parent.removeEventListener("popstate", window.parent.__ojHistoryListener);
-    }
-    window.parent.__ojHistoryListener = requestRerun;
-    window.parent.addEventListener("popstate", window.parent.__ojHistoryListener);
-  } catch (_) {
-    // 若宿主改变 iframe 隔离策略，Cookie 同步仍可独立工作。
-  }
-}
-
 window.addEventListener("message", (event) => {
   if (!event.data || event.data.type !== "streamlit:render") return;
   const args = event.data.args || {};
@@ -65,7 +35,6 @@ window.addEventListener("message", (event) => {
 
 notifyReady();
 setHeight();
-installHistoryListener();
 </script>
 </body>
 </html>

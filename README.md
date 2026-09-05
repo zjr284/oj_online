@@ -85,7 +85,7 @@ models   →  数据结构（ORM / 文件）
 ```
 
 **新增功能的标准做法**：在对应域下写 service → 写 router → 在 `main.py` 挂载
-→ Streamlit 前端在 `app.py` 加页面函数，并在 `render_sidebar` 导航与 `main()` 分发中注册。
+→ Streamlit 前端在 `app.py` 加页面函数，并通过 `st.Page` / `st.navigation` 注册。
 
 ## 评测流水线（Step 2/3）
 
@@ -108,7 +108,8 @@ models   →  数据结构（ORM / 文件）
 重置接口会停止后台评测和 AI 任务，清除会话、题目、记录、限流与 AI 配置，再恢复初始管理员和默认语言。
 
 前端使用 `st.fragment` 每 1.5 秒查询状态，不整页刷新。浏览器保存不透明会话 Cookie，整页刷新后经
-`GET /api/auth/me` 校验并恢复身份。页面与详情位置写入 URL，浏览器前进/后退会恢复对应界面；
+`GET /api/auth/me` 校验并恢复身份。页面导航由 `st.navigation` / `st.switch_page` 统一管理，
+前进、后退和页内返回均保留当前会话；
 旧版 URL 中的 `oj_s` / `oj_u` 凭据会被移除。
 
 ## 关键约定（来自实验要求）

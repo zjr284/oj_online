@@ -27,7 +27,7 @@ curl -c jar -X POST localhost:8000/api/auth/login -H 'Content-Type: application/
 ## 分层
 
 routers（HTTP 语义）→ services（业务逻辑）→ models / ProblemStore（存储）。
-新增模块：service → router → `main.py` 挂载 → Streamlit 页面（app.py：render_sidebar 导航 + main() 分发）。
+新增模块：service → router → `main.py` 挂载 → Streamlit 页面（app.py：`st.Page` 注册 + `st.navigation` 分发）。
 
 ## 状态
 
@@ -53,11 +53,11 @@ R3：模型调用期间 ticker 每 2s 推进度、cancel 推 final(cancelled) �
   提交后就地轮询结果；独立「提交评测」导航页已移除，代码提交统一走题目详情内嵌面板。
 - Streamlit AppTest 冒烟测试用 monkeypatch 把 OJ_API_BASE 指向死端口隔离真实后端，
   否则页面真实请求 live 后端 401 会触发 _clear_session 清空预置 me。
-- 侧边栏导航 radio 用 `key="nav"` 绑定 session_state、只在首次/失效时播种默认值；
-  切勿每次 rerun 传 `index=旧值`，否则覆盖用户刚点的选项导致需双击才能切页（streamlit#3534）。
+- 顶层导航统一使用 `st.navigation` / `st.page_link`，页内跳转使用 `st.switch_page`；
+  禁止用 HTML 链接、`st.link_button` 或自定义 popstate/reload 实现内部导航。
   透明 stHeader 需加 `pointer-events: none`，避免不可见的固定头栏拦截顶部区域点击。
-- 登录 Cookie 只保存在 Streamlit session_state 中，禁止写入 URL；旧版 oj_s/oj_u 会被移除。
-  整页刷新后需重新登录。评测和 AI 进度使用 st.fragment 的 1.5 秒片段轮询，不能用 meta refresh。
+- 登录 Cookie 禁止写入 URL；旧版 oj_s/oj_u 会被移除。浏览器 Cookie 仅用于
+  整页刷新后恢复登录，不参与导航。评测和 AI 进度使用 st.fragment 的 1.5 秒片段轮询。
 - success 表示评测正常返回结果，WA/TLE/MLE/RE 均属于 success；全部 AC 才增加 resolve_count。
   error 用于 CE 或评测系统错误。题目显式限制优先于语言限制，再回退至系统默认。
 - 题目编辑省略 public_cases 时保留原策略；普通用户不能经题目增改接口更改公开策略。

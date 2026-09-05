@@ -7,12 +7,27 @@ from streamlit.testing.v1 import AppTest
 APP = str(Path(__file__).resolve().parent.parent / "app.py")
 
 
+def _registered_page_titles(at):
+    return [page["page_name"] for page in at._registered_pages.values()]
+
+
+def _open_page(at, url_path, **query_params):
+    """在 AppTest 中打开 st.navigation 注册的 callable 页面。"""
+    at._page_hash = next(
+        page_hash for page_hash, page in at._registered_pages.items()
+        if page["url_pathname"] == url_path
+    )
+    at.query_params.clear()
+    at.query_params.update(query_params)
+    return at.run()
+
+
 def test_login_page_renders_for_guest():
     """未登录：显示登录/注册导航，无异常。"""
     at = AppTest.from_file(APP, default_timeout=30)
     at.run()
     assert not at.exception
-    assert list(at.radio[0].options) == ["🔑 登录", "📝 注册"]
+    assert _registered_page_titles(at) == ["登录", "注册"]
 
 
 def test_login_empty_fields_shows_friendly_error():
@@ -35,16 +50,15 @@ def test_audit_page_admin_only_and_renders(monkeypatch):
     at.session_state["me"] = {"username": "alice", "user_id": "2", "role": "user"}
     at.run()
     assert not at.exception
-    assert "🛡 访问审计" not in list(at.radio[0].options)
+    assert "访问审计" not in _registered_page_titles(at)
 
     # 管理员：导航可见，页面渲染出筛选表单与分页控件
     at = AppTest.from_file(APP, default_timeout=30)
     at.session_state["me"] = {"username": "root", "user_id": "1", "role": "admin"}
     at.run()
     assert not at.exception
-    options = list(at.radio[0].options)
-    assert "🛡 访问审计" in options
-    at.radio[0].set_value("🛡 访问审计").run()
+    assert "访问审计" in _registered_page_titles(at)
+    _open_page(at, "audit")
     assert not at.exception
     texts = (" ".join(str(md.value) for md in at.markdown)
              + " ".join(str(t.value) for t in at.title)
@@ -63,31 +77,27 @@ def test_refresh_restore_rejects_forged_token(monkeypatch):
     at.query_params["oj_u"] = "1"
     at.run()
     assert not at.exception
-    assert list(at.radio[0].options) == ["🔑 登录", "📝 注册"]
+    assert _registered_page_titles(at) == ["登录", "注册"]
 
 
-def test_sidebar_nav_switches_page_on_single_click(monkeypatch):
-    """回归：侧边栏导航单击即切换页面且不回跳。
-
-    曾因每次 rerun 给 st.radio 传 index=旧值覆盖用户刚点的选项（streamlit#3534），
-    导致第一次点击被吞、需双击。修复后导航值由 key 绑定，一次点击即生效。
-    """
+def test_streamlit_navigation_switches_page_without_login_loss(monkeypatch):
+    """回归：Streamlit 原生导航切页后保留当前登录会话。"""
     monkeypatch.setenv("OJ_API_BASE", "http://127.0.0.1:1")
     at = AppTest.from_file(APP, default_timeout=30)
     at.session_state["me"] = {"username": "alice", "user_id": "2", "role": "user"}
     at.run()
     assert not at.exception
-    assert at.radio[0].value == "📋 题目"   # 默认页
+    assert any(str(title.value) == "📋 题目列表" for title in at.title)
 
-    at.radio[0].set_value("📜 评测记录").run()   # 单击一次
+    _open_page(at, "submissions")
     assert not at.exception
-    assert at.radio[0].value == "📜 评测记录"    # 选项不回跳
-    assert at.session_state["nav"] == "📜 评测记录"
+    assert at.session_state["me"]["username"] == "alice"
+    assert any(str(title.value) == "📜 评测记录" for title in at.title)
 
-    at.radio[0].set_value("🙍 个人主页").run()   # 连续切换，每次都是一次点击
+    _open_page(at, "profile")
     assert not at.exception
-    assert at.radio[0].value == "🙍 个人主页"
-    assert at.session_state["nav"] == "🙍 个人主页"
+    assert at.session_state["me"]["username"] == "alice"
+    assert any(str(title.value) == "🙍 个人主页" for title in at.title)
 
 
 def test_ai_and_language_pages_are_available_to_regular_users(monkeypatch):
@@ -101,9 +111,9 @@ def test_ai_and_language_pages_are_available_to_regular_users(monkeypatch):
     at.session_state["me"] = {"username": "alice", "user_id": "2", "role": "user"}
     at.run()
     assert not at.exception
-    assert "✨ AI 命题" in list(at.radio[0].options)
-    assert "🧩 语言管理" in list(at.radio[0].options)
-    at.radio[0].set_value("✨ AI 命题").run()
+    assert "AI 命题" in _registered_page_titles(at)
+    assert "语言管理" in _registered_page_titles(at)
+    _open_page(at, "ai")
     assert not at.exception
     texts = (" ".join(str(md.value) for md in at.markdown)
              + " ".join(str(s.value) for s in at.subheader)
@@ -189,11 +199,11 @@ def test_language_page_lists_and_registers_for_regular_user(monkeypatch):
     _fake_api(monkeypatch, state)
     at = AppTest.from_file(APP, default_timeout=30)
     at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
-    at.session_state['nav'] = '🧩 语言管理'
     at.run()
+    _open_page(at, 'languages')
 
     assert not at.exception
-    assert '🧩 语言管理' in list(at.radio[0].options)
+    assert '语言管理' in _registered_page_titles(at)
     assert any('当前支持的语言' in str(s.value) for s in at.subheader)
     inputs = {item.label: item for item in at.text_input}
     inputs['语言名称'].set_value('go')
@@ -240,6 +250,11 @@ def test_problem_title_is_the_detail_link(monkeypatch):
     assert route_problem == '1001' or route_problem == ['1001']
     assert not any(button.label in ('查看题目详情', '打开详情') for button in at.button)
 
+    next(button for button in at.button if button.label == '← 返回列表').click().run()
+    assert not at.exception
+    assert at.session_state['me']['username'] == 'alice'
+    assert any(str(title.value) == '📋 题目列表' for title in at.title)
+
 
 def test_only_admin_can_set_problem_log_visibility(monkeypatch):
     state = {}
@@ -247,14 +262,14 @@ def test_only_admin_can_set_problem_log_visibility(monkeypatch):
 
     user_app = AppTest.from_file(APP, default_timeout=30)
     user_app.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
-    user_app.query_params.update({'page': 'problems', 'problem': '1001'})
     user_app.run()
+    _open_page(user_app, 'problem_detail', problem='1001')
     assert not any(radio.label == '谁可以查看日志详情' for radio in user_app.radio)
 
     admin_app = AppTest.from_file(APP, default_timeout=30)
     admin_app.session_state['me'] = {'username': 'root', 'user_id': '1', 'role': 'admin'}
-    admin_app.query_params.update({'page': 'problems', 'problem': '1001'})
     admin_app.run()
+    _open_page(admin_app, 'problem_detail', problem='1001')
     setting = next(radio for radio in admin_app.radio if radio.label == '谁可以查看日志详情')
     setting.set_value(True).run()
     next(button for button in admin_app.button if button.label == '保存日志权限设置').click().run()
@@ -263,36 +278,34 @@ def test_only_admin_can_set_problem_log_visibility(monkeypatch):
     assert request[2] == {'public_cases': True}
 
 
-def test_url_route_restores_previous_interface(monkeypatch):
-    """URL 是页面状态源，浏览器前进/后退后的 rerun 可恢复对应界面。"""
+def test_native_route_restores_previous_interface(monkeypatch):
+    """Streamlit 原生页面路由与查询参数可恢复对应界面。"""
     _fake_api(monkeypatch, {})
     at = AppTest.from_file(APP, default_timeout=30)
     at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
-    at.query_params['page'] = 'profile'
     at.run()
-    assert at.session_state['nav'] == '🙍 个人主页'
+    _open_page(at, 'profile')
     assert any(str(title.value) == '🙍 个人主页' for title in at.title)
 
-    at.query_params.clear()
-    at.query_params.update({'page': 'problems', 'problem': '1001'})
-    at.run()
-    assert at.session_state['nav'] == '📋 题目'
+    _open_page(at, 'problem_detail', problem='1001')
     assert at.session_state['prob_view'] == 'detail'
     assert any(str(title.value) == 'A + B Problem' for title in at.title)
 
-    # 模拟浏览器“返回”恢复之前的 URL。
-    at.query_params.clear()
-    at.query_params.update({'page': 'profile'})
-    at.run()
-    assert at.session_state['nav'] == '🙍 个人主页'
+    # 模拟浏览器“返回”恢复之前的 Streamlit 页面。
+    _open_page(at, 'profile')
+    assert at.session_state['me']['username'] == 'alice'
     assert any(str(title.value) == '🙍 个人主页' for title in at.title)
 
 
-def test_browser_history_bridge_preserves_streamlit_session():
-    """浏览器返回时应在当前 Streamlit 会话中 rerun，不得整页刷新丢失登录态。"""
+def test_navigation_uses_only_streamlit_router():
+    """页面导航交给 Streamlit，Cookie 组件不再干预浏览器历史。"""
     component = (Path(APP).parent / 'app' / 'static' / 'session_cookie' / 'index.html').read_text()
-    assert 'type: "streamlit:setComponentValue"' in component
-    assert 'window.parent.location.reload()' not in component
+    app_source = Path(APP).read_text()
+    assert 'st.navigation(' in app_source
+    assert 'st.page_link(' in app_source
+    assert 'st.switch_page(' in app_source
+    assert 'st.link_button(' not in app_source
+    assert 'popstate' not in component and 'location.reload' not in component
 
 
 def test_profile_can_rename_current_user(monkeypatch):
@@ -300,8 +313,8 @@ def test_profile_can_rename_current_user(monkeypatch):
     _fake_api(monkeypatch, state)
     at = AppTest.from_file(APP, default_timeout=30)
     at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
-    at.session_state['nav'] = '🙍 个人主页'
     at.run()
+    _open_page(at, 'profile')
 
     rename = next(item for item in at.text_input if item.label.startswith('新用户名'))
     rename.set_value('alice_new')
@@ -316,10 +329,8 @@ def test_ai_progress_and_cancel_keep_current_page(monkeypatch):
     _fake_api(monkeypatch, state)
     at = AppTest.from_file(APP, default_timeout=30)
     at.session_state['me'] = {'username': 'root', 'user_id': '1', 'role': 'admin'}
-    at.session_state['nav'] = '✨ AI 命题'
-    at.session_state['ai_view'] = 'task'
-    at.session_state['ai_task_id'] = 7
     at.run()
+    _open_page(at, 'ai_task', task='7')
     assert not at.exception
     assert not any('http-equiv="refresh"' in str(md.value) for md in at.markdown)
     assert any('中断任务' in b.label for b in at.button)
@@ -328,7 +339,6 @@ def test_ai_progress_and_cancel_keep_current_page(monkeypatch):
     assert not at.exception
     assert state['status'] == 'cancelled'
     assert at.session_state['ai_task_id'] == 7
-    assert at.session_state['nav'] == '✨ AI 命题'
     assert any('已中断' in str(info.value) for info in at.info)
 
 
@@ -336,10 +346,8 @@ def test_ai_result_can_be_reviewed_before_import(monkeypatch):
     _fake_api(monkeypatch, {'status': 'done'})
     at = AppTest.from_file(APP, default_timeout=30)
     at.session_state['me'] = {'username': 'root', 'user_id': '1', 'role': 'admin'}
-    at.session_state['nav'] = '✨ AI 命题'
-    at.session_state['ai_view'] = 'task'
-    at.session_state['ai_task_id'] = 7
     at.run()
+    _open_page(at, 'ai_task', task='7')
     assert not at.exception
     editor = next(area for area in at.text_area if '审阅' in area.label)
     editor.set_value('not json')
@@ -352,10 +360,8 @@ def test_submission_shows_partial_score_and_successful_compile(monkeypatch):
     _fake_api(monkeypatch, {})
     at = AppTest.from_file(APP, default_timeout=30)
     at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
-    at.session_state['nav'] = '📜 评测记录'
-    at.session_state['sub_view'] = 'detail'
-    at.session_state['sub_id'] = '1'
     at.run()
+    _open_page(at, 'submission_detail', submission='1')
     assert not at.exception
     assert any('未通过' in str(w.value) for w in at.warning)
     assert any('编译成功' in str(md.value) for md in at.markdown)

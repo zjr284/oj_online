@@ -1,4 +1,4 @@
-"""同步浏览器会话 Cookie，并将浏览器前进/后退事件转成 Streamlit rerun。"""
+"""在浏览器中同步后端会话令牌，供 Streamlit 整页刷新后恢复登录。"""
 from pathlib import Path
 
 import streamlit.components.v1 as components
@@ -10,5 +10,5 @@ _component = components.declare_component(
 
 
 def write_session_cookie(token: str | None, max_age: int) -> None:
-    """写入/删除 Cookie，并挂载不会销毁当前会话的历史导航监听器。"""
+    """写入或删除浏览器 Cookie；组件本身不显示可见内容。"""
     _component(token=token or "", max_age=max_age, key="oj-session-cookie", default=None)

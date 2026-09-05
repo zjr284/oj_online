@@ -16,7 +16,6 @@ import json
 import os
 import re
 import time
-from urllib.parse import urlencode
 
 import httpx
 import pandas as pd
@@ -51,94 +50,25 @@ class ApiError(Exception):
 _SESSION_PARAM = "oj_s"   # 仅用于清理旧版 URL 凭据
 _UID_PARAM = "oj_u"
 
-NAV_ROUTES = {
-    "📋 题目": "problems",
-    "📜 评测记录": "submissions",
-    "🙍 个人主页": "profile",
-    "🧩 语言管理": "languages",
-    "✨ AI 命题": "ai",
-    "🛠 用户管理": "users",
-    "🛡 访问审计": "audit",
-}
-ROUTE_PAGES = {slug: page for page, slug in NAV_ROUTES.items()}
+# main() 在每次渲染时注册的 Streamlit 原生页面。所有内部跳转都通过
+# st.page_link / st.switch_page 完成，由 Streamlit 统一管理 URL、浏览器历史和会话。
+_ACTIVE_PAGES: dict[str, object] = {}
 
 
 def _valid_problem_id(value: object) -> bool:
     return bool(re.fullmatch(r"[0-9]{1,18}", str(value)))
 
 
-def _route_href(page: str, **params) -> str:
-    """生成同一 Streamlit 页面内的可回退链接。"""
-    slug = NAV_ROUTES.get(page, page)
-    query = {"page": slug, **{k: str(v) for k, v in params.items() if v not in (None, "")}}
-    return "?" + urlencode(query)
-
-
-def _set_route(page: str, **params) -> None:
-    """把界面位置写入 URL，使浏览器前进/后退可以恢复页面。"""
-    slug = NAV_ROUTES.get(page, page)
-    st.query_params.from_dict(
-        {"page": slug, **{k: str(v) for k, v in params.items() if v not in (None, "")}}
-    )
-
-
-def _restore_route() -> None:
-    """以 URL 为准恢复主页面及题目、提交、AI 的二级页面。"""
-    me = st.session_state.get("me")
-    if not me:
-        return
-    allowed = ["📋 题目", "📜 评测记录", "🧩 语言管理", "✨ AI 命题", "🙍 个人主页"]
-    if me.get("role") == "admin":
-        allowed += ["🛠 用户管理", "🛡 访问审计"]
-    has_url_route = bool(st.query_params.get("page"))
-    requested = ROUTE_PAGES.get(st.query_params.get("page", ""))
-    page = requested if requested in allowed else st.session_state.get("nav")
-    if page not in allowed:
-        page = allowed[0]
-    st.session_state["nav"] = page
-    if not has_url_route:
-        return
-
-    if page == "📋 题目":
-        problem_id = st.query_params.get("problem")
-        view = st.query_params.get("view")
-        if view == "new":
-            st.session_state["prob_view"] = "new"
-            st.session_state.pop("prob_id", None)
-        elif problem_id and _valid_problem_id(problem_id):
-            st.session_state["prob_id"] = str(problem_id)
-            st.session_state["prob_view"] = "edit" if view == "edit" else "detail"
-        else:
-            st.session_state["prob_view"] = "list"
-            st.session_state.pop("prob_id", None)
-    elif page == "📜 评测记录":
-        submission_id = st.query_params.get("submission")
-        st.session_state["sub_filter_problem"] = st.query_params.get("problem", "")
-        if submission_id and str(submission_id).isdigit():
-            st.session_state["sub_id"] = str(submission_id)
-            st.session_state["sub_view"] = "detail"
-        else:
-            st.session_state["sub_view"] = "list"
-            st.session_state.pop("sub_id", None)
-    elif page == "✨ AI 命题":
-        task_id = st.query_params.get("task")
-        if task_id and str(task_id).isdigit():
-            st.session_state["ai_task_id"] = int(task_id)
-            st.session_state["ai_view"] = "task"
-        else:
-            st.session_state["ai_view"] = "home"
-            st.session_state.pop("ai_task_id", None)
-
-
-def _sidebar_route_changed() -> None:
-    page = st.session_state.get("nav")
-    if page in NAV_ROUTES:
-        _set_route(page)
+def _go(page: str, **params) -> None:
+    """在当前标签页中进入已注册的 Streamlit 页面。"""
+    query_params = {key: str(value) for key, value in params.items()
+                    if value not in (None, "")}
+    st.switch_page(_ACTIVE_PAGES[page], query_params=query_params)
 
 
 def _clear_session():
     """清除本地登录态与页面状态（登出/会话过期时），并清掉 URL 中的会话参数。"""
-    for key in ("me", "cookies", "nav", "prob_view", "prob_id",
+    for key in ("me", "cookies", "prob_view", "prob_id",
                 "sub_view", "sub_id", "confirm_delete",
                 "ai_view", "ai_task_id", "audit_user", "audit_problem", "audit_page"):
         st.session_state.pop(key, None)
@@ -277,12 +207,13 @@ hr {border-color: var(--oj-line); margin: 1.45rem 0;}
 [data-testid="stSidebar"] label,
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {color: rgba(241, 245, 249, .82);}
 [data-testid="stSidebar"] hr {border-color: rgba(255,255,255,.13);}
-[data-testid="stSidebar"] [role="radiogroup"] label {
+[data-testid="stSidebar"] [data-testid="stPageLink"] a {
   padding: 10px 13px; border: 1px solid transparent; border-radius: 11px; margin: 4px 0;
-  color: rgba(248,250,252,.86); transition: background .18s, border-color .18s, transform .18s;}
-[data-testid="stSidebar"] [role="radiogroup"] label:hover {
+  color: rgba(248,250,252,.86); text-decoration: none;
+  transition: background .18s, border-color .18s, transform .18s;}
+[data-testid="stSidebar"] [data-testid="stPageLink"] a:hover {
   background: rgba(255,255,255,.09); border-color: rgba(255,255,255,.12); transform: translateX(3px);}
-[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+[data-testid="stSidebar"] [data-testid="stPageLink"] a[aria-current="page"] {
   background: linear-gradient(100deg, rgba(56,189,248,.25), rgba(139,92,246,.22));
   border-color: rgba(125,211,252,.34); color: #fff; font-weight: 750;
   box-shadow: 0 8px 24px rgba(2, 8, 23, .15);}
@@ -365,9 +296,6 @@ button[role="tab"][aria-selected="true"] {color: var(--oj-indigo); font-weight: 
 .oj-table tbody tr:hover {background: linear-gradient(90deg, rgba(219,234,254,.64), rgba(237,233,254,.48));}
 .oj-table tbody tr:last-child td {border-bottom: none;}
 .oj-mono {font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #4f5d75;}
-.oj-problem-link {color:var(--oj-indigo); font-weight:750; text-decoration:none;}
-.oj-problem-link:hover {color:var(--oj-violet); text-decoration:underline; text-underline-offset:3px;}
-
 /* 登录/注册页的彩色横幅。 */
 .oj-hero {position:relative; overflow:hidden; min-height:150px; display:flex; align-items:center;
   padding:30px 36px; margin:0 0 1.3rem; border-radius:20px; color:#fff;
@@ -489,9 +417,31 @@ def _inject_ui():
     st.markdown(_UI_CSS, unsafe_allow_html=True)
 
 
-# ---------- 侧边栏：登录态 + 导航 ----------
+# ---------- 侧边栏：登录态 + Streamlit 原生导航 ----------
 
-def render_sidebar() -> str:
+_PAGE_LABELS = {
+    "login": ("🔑", "登录"),
+    "register": ("📝", "注册"),
+    "problems": ("📋", "题目"),
+    "submissions": ("📜", "评测记录"),
+    "languages": ("🧩", "语言管理"),
+    "ai": ("✨", "AI 命题"),
+    "profile": ("🙍", "个人主页"),
+    "users": ("🛠️", "用户管理"),
+    "audit": ("🛡️", "访问审计"),
+    "problem_new": ("➕", "新建题目"),
+    "problem_detail": ("📖", "题目详情"),
+    "problem_edit": ("✏️", "编辑题目"),
+    "submission_detail": ("📄", "提交详情"),
+    "ai_task": ("🤖", "AI 任务详情"),
+}
+
+_SIDEBAR_PAGE_KEYS = (
+    "problems", "submissions", "languages", "ai", "profile", "users", "audit",
+)
+
+
+def render_sidebar() -> None:
     me = st.session_state.get("me")
     with st.sidebar:
         st.markdown(
@@ -509,15 +459,13 @@ def render_sidebar() -> str:
                 unsafe_allow_html=True,
             )
             st.divider()
-            pages = ["📋 题目", "📜 评测记录", "🧩 语言管理", "✨ AI 命题", "🙍 个人主页"]
-            if me.get("role") == "admin":
-                pages += ["🛠 用户管理", "🛡 访问审计"]
-            # 导航用 key 直接绑定 session_state，只播种默认值一次；
-            # 不要每次 rerun 传 index=旧值——会覆盖用户刚点击的选项，导致需双击才能切页。
-            if st.session_state.get("nav") not in pages:
-                st.session_state["nav"] = pages[0]
-            page = st.radio("导航", pages, key="nav", label_visibility="collapsed",
-                            on_change=_sidebar_route_changed)
+            for key in _SIDEBAR_PAGE_KEYS:
+                if key not in _ACTIVE_PAGES:
+                    continue
+                page = _ACTIVE_PAGES[key]
+                icon, label = _PAGE_LABELS[key]
+                st.page_link(page, label=label, icon=icon, width="stretch")
+            st.divider()
             if st.button("退出登录", width="stretch"):
                 try:
                     api("POST", "/api/auth/logout")
@@ -525,9 +473,12 @@ def render_sidebar() -> str:
                     pass   # 会话已失效也无妨
                 _clear_session()
                 st.rerun()
-            return page
-        st.markdown("尚未登录，请先登录后使用。")
-        return st.radio("导航", ["🔑 登录", "📝 注册"], label_visibility="collapsed")
+        else:
+            st.markdown("尚未登录，请先登录后使用。")
+            for key in ("login", "register"):
+                page = _ACTIVE_PAGES[key]
+                icon, label = _PAGE_LABELS[key]
+                st.page_link(page, label=label, icon=icon, width="stretch")
 
 
 # ---------- 任务 1：用户页面组 ----------
@@ -819,15 +770,39 @@ def page_audit_logs():
 # ---------- 任务 2：题目页面组 ----------
 
 def page_problems():
-    if "prob_view" not in st.session_state:
-        st.session_state["prob_view"] = "list"
-    view = st.session_state["prob_view"]
-    if view == "detail":
-        _problem_detail()
-    elif view in ("new", "edit"):
-        _problem_form()
-    else:
-        _problem_list()
+    st.session_state["prob_view"] = "list"
+    st.session_state.pop("prob_id", None)
+    _problem_list()
+
+
+def page_problem_new():
+    st.session_state["prob_view"] = "new"
+    st.session_state.pop("prob_id", None)
+    _problem_form()
+
+
+def page_problem_detail():
+    problem_id = st.query_params.get("problem")
+    if not problem_id or not _valid_problem_id(problem_id):
+        st.error("题目 ID 无效。")
+        if st.button("← 返回题目列表"):
+            _go("problems")
+        return
+    st.session_state["prob_id"] = str(problem_id)
+    st.session_state["prob_view"] = "detail"
+    _problem_detail()
+
+
+def page_problem_edit():
+    problem_id = st.query_params.get("problem")
+    if not problem_id or not _valid_problem_id(problem_id):
+        st.error("题目 ID 无效。")
+        if st.button("← 返回题目列表"):
+            _go("problems")
+        return
+    st.session_state["prob_id"] = str(problem_id)
+    st.session_state["prob_view"] = "edit"
+    _problem_form()
 
 
 def _problem_list():
@@ -838,7 +813,8 @@ def _problem_list():
         friendly_error(e)
         return
     st.caption(f"共 {len(problems)} 题")
-    st.link_button("➕ 新建题目", _route_href("problems", view="new"), type="primary")
+    if st.button("➕ 新建题目", type="primary"):
+        _go("problem_new")
     if not problems:
         st.info("暂无题目，点击上方按钮创建第一道题。")
         return
@@ -854,16 +830,14 @@ def _problem_list():
         if title_col.button(
             problem["title"], key=f"problem-title-{problem['id']}", type="tertiary",
         ):
-            st.session_state["prob_id"] = str(problem["id"])
-            st.session_state["prob_view"] = "detail"
-            _set_route("problems", problem=problem["id"])
-            st.rerun()
+            _go("problem_detail", problem=problem["id"])
 
 
 def _problem_detail():
     pid = st.session_state.get("prob_id")
     me = st.session_state.get("me")
-    st.link_button("← 返回列表", _route_href("problems"))
+    if st.button("← 返回列表"):
+        _go("problems")
     try:
         p = api("GET", f"/api/problems/{pid}")
     except ApiError as e:
@@ -910,8 +884,10 @@ def _problem_detail():
         _submit_panel(pid)
 
     c1, c2, c3 = st.columns(3)
-    c1.link_button("✏️ 编辑题目", _route_href("problems", problem=pid, view="edit"), width="stretch")
-    c2.link_button("📜 本题提交记录", _route_href("submissions", problem=pid), width="stretch")
+    if c1.button("✏️ 编辑题目", width="stretch"):
+        _go("problem_edit", problem=pid)
+    if c2.button("📜 本题提交记录", width="stretch"):
+        _go("submissions", problem=pid)
     if me.get("role") == "admin":
         if c3.button("🗑 删除题目", width="stretch"):
             st.session_state["confirm_delete"] = pid
@@ -924,8 +900,7 @@ def _problem_detail():
                     st.session_state.pop("confirm_delete", None)
                     st.success("已删除。")
                     time.sleep(0.5)
-                    _set_route("problems")
-                    st.rerun()
+                    _go("problems")
                 except ApiError as e:
                     friendly_error(e)
             if b.button("取消", width="stretch"):
@@ -968,8 +943,11 @@ def _problem_form():
             friendly_error(e)
             return
     st.title("✏️ 编辑题目" if is_edit else "➕ 新建题目")
-    back_href = _route_href("problems", problem=pid) if is_edit else _route_href("problems")
-    st.link_button("← 返回", back_href)
+    if st.button("← 返回"):
+        if is_edit:
+            _go("problem_detail", problem=pid)
+        else:
+            _go("problems")
 
     with st.form("problem-form"):
         c1, c2 = st.columns(2)
@@ -1061,8 +1039,7 @@ def _problem_form():
         friendly_error(e)
         return
     time.sleep(0.5)
-    _set_route("problems", problem=pid_in.strip())
-    st.rerun()
+    _go("problem_detail", problem=pid_in.strip())
 
 
 # ---------- 任务 3：评测与提交页面组 ----------
@@ -1100,12 +1077,22 @@ def _submit_panel(pid: str):
 
 
 def page_submissions():
-    if "sub_view" not in st.session_state:
-        st.session_state["sub_view"] = "list"
-    if st.session_state["sub_view"] == "detail":
-        _submission_detail()
-    else:
-        _submission_list()
+    st.session_state["sub_filter_problem"] = st.query_params.get("problem", "")
+    st.session_state["sub_view"] = "list"
+    st.session_state.pop("sub_id", None)
+    _submission_list()
+
+
+def page_submission_detail():
+    submission_id = st.query_params.get("submission")
+    if not submission_id or not str(submission_id).isdigit():
+        st.error("提交 ID 无效。")
+        if st.button("← 返回评测记录"):
+            _go("submissions")
+        return
+    st.session_state["sub_id"] = str(submission_id)
+    st.session_state["sub_view"] = "detail"
+    _submission_detail()
 
 
 def _submission_list():
@@ -1162,15 +1149,15 @@ def _submission_list():
     sel = st.selectbox("查看提交详情", [s["submission_id"] for s in subs],
                        format_func=lambda x: f"#{x}")
     if st.button("打开详情"):
-        _set_route("submissions", submission=sel, problem=problem.strip())
-        st.rerun()
+        _go("submission_detail", submission=sel, problem=problem.strip())
 
 
 @st.fragment(run_every=1.5)
 def _submission_detail():
     sid = st.session_state.get("sub_id")
     me = st.session_state.get("me")
-    st.link_button("← 返回列表", _route_href("submissions", problem=st.query_params.get("problem", "")))
+    if st.button("← 返回列表"):
+        _go("submissions", problem=st.query_params.get("problem", ""))
     try:
         s = api("GET", f"/api/submissions/{sid}")
     except ApiError as e:
@@ -1338,8 +1325,7 @@ def _render_ai_result(result: dict, problem_id: str | None):
                 new_id = api("POST", "/api/problems/", json=result)["id"]
                 st.success(f"已保存为新题目 {new_id}。")
             time.sleep(0.4)
-            _set_route("problems", problem=problem_id or result.get("id"))
-            st.rerun()
+            _go("problem_detail", problem=problem_id or result.get("id"))
         except ApiError as e:
             friendly_error(e)
 
@@ -1347,7 +1333,8 @@ def _render_ai_result(result: dict, problem_id: str | None):
 @st.fragment(run_every=1.5)
 def _ai_task_detail():
     tid = st.session_state.get("ai_task_id")
-    st.link_button("← 返回 AI 命题页", _route_href("ai"))
+    if st.button("← 返回 AI 命题页"):
+        _go("ai")
     try:
         d = api("GET", f"/api/ai/problem-tasks/{tid}")
     except ApiError as e:
@@ -1385,12 +1372,21 @@ def _ai_task_detail():
 
 
 def page_ai():
-    if "ai_view" not in st.session_state:
-        st.session_state["ai_view"] = "home"
-    if st.session_state["ai_view"] == "task":
-        _ai_task_detail()
-    else:
-        _ai_home()
+    st.session_state["ai_view"] = "home"
+    st.session_state.pop("ai_task_id", None)
+    _ai_home()
+
+
+def page_ai_task():
+    task_id = st.query_params.get("task")
+    if not task_id or not str(task_id).isdigit():
+        st.error("AI 任务 ID 无效。")
+        if st.button("← 返回 AI 命题页"):
+            _go("ai")
+        return
+    st.session_state["ai_task_id"] = int(task_id)
+    st.session_state["ai_view"] = "task"
+    _ai_task_detail()
 
 
 def _ai_home():
@@ -1486,8 +1482,7 @@ def _ai_home():
                     })
                     st.success("任务已创建，开始生成…")
                     time.sleep(0.4)
-                    _set_route("ai", task=resp["task_id"])
-                    st.rerun()
+                    _go("ai_task", task=resp["task_id"])
                 except ApiError as e:
                     friendly_error(e)
 
@@ -1512,13 +1507,46 @@ def _ai_home():
                 unsafe_allow_html=True)
     sel = st.selectbox("查看任务详情", [t["task_id"] for t in tasks], format_func=lambda x: f"#{x}")
     if st.button("打开详情"):
-        _set_route("ai", task=sel)
-        st.rerun()
+        _go("ai_task", task=sel)
 
 
 # ---------- 入口 ----------
 
+def _build_pages(me: dict | None) -> dict[str, object]:
+    """按登录态创建可访问的 Streamlit 原生页面集。"""
+    if not me:
+        specs = [
+            ("login", page_login, True),
+            ("register", page_register, False),
+        ]
+    else:
+        specs = [
+            ("problems", page_problems, True),
+            ("submissions", page_submissions, False),
+            ("languages", page_languages, False),
+            ("ai", page_ai, False),
+            ("profile", page_profile, False),
+            ("problem_new", page_problem_new, False),
+            ("problem_detail", page_problem_detail, False),
+            ("problem_edit", page_problem_edit, False),
+            ("submission_detail", page_submission_detail, False),
+            ("ai_task", page_ai_task, False),
+        ]
+        if me.get("role") == "admin":
+            specs += [
+                ("users", page_admin_users, False),
+                ("audit", page_audit_logs, False),
+            ]
+    return {
+        key: st.Page(func, title=_PAGE_LABELS[key][1], icon=_PAGE_LABELS[key][0],
+                     url_path=key, default=is_default,
+                     visibility="visible" if key in _SIDEBAR_PAGE_KEYS else "hidden")
+        for key, func, is_default in specs
+    }
+
+
 def main():
+    global _ACTIVE_PAGES
     _inject_ui()
     _restore_login()
     # 登录后的每次完整渲染都同步浏览器 Cookie。登录表单会立即 rerun，
@@ -1527,26 +1555,10 @@ def main():
     if st.session_state.get("me"):
         token = st.session_state.get("cookies", {}).get(SESSION_COOKIE)
     write_session_cookie(token, config.SESSION_TTL_SECONDS)
-    _restore_route()
-    page = render_sidebar()
-    if page == "🔑 登录":
-        page_login()
-    elif page == "📝 注册":
-        page_register()
-    elif page == "📋 题目":
-        page_problems()
-    elif page == "📜 评测记录":
-        page_submissions()
-    elif page == "🧩 语言管理":
-        page_languages()
-    elif page == "🙍 个人主页":
-        page_profile()
-    elif page == "🛠 用户管理":
-        page_admin_users()
-    elif page == "🛡 访问审计":
-        page_audit_logs()
-    elif page == "✨ AI 命题":
-        page_ai()
+    _ACTIVE_PAGES = _build_pages(st.session_state.get("me"))
+    current_page = st.navigation(list(_ACTIVE_PAGES.values()), position="hidden")
+    render_sidebar()
+    current_page.run()
 
 
 main()
