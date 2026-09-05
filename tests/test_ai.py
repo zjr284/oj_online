@@ -399,9 +399,9 @@ async def test_progress_continuous(client, monkeypatch):
     async with client.stream("GET", f"/api/ai/problem-tasks/{tid}/events") as r:
         text = (await r.aread()).decode()
 
-    # 模型推理期间 ticker 每 2s 推送一次：0.05/0.15/tick×2/0.7/0.9
-    assert text.count("event: progress") >= 5
-    assert "模型推理中" in text
+    # 订阅前的进度由 state 快照表示；验证调用尚未结束时确实发出了两次更新。
+    assert "模型推理中（已 2s）" in text
+    assert "模型推理中（已 4s）" in text
     assert "event: final" in text
 
 

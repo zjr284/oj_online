@@ -10,7 +10,7 @@ from app.database import Base
 class Submission(Base):
     """一次代码提交（Step 3）。
 
-    status: pending(等待评测) / success(全部通过) / error(未通过或运行出错)
+    status: pending(等待评测) / success(正常完成判题) / error(编译或评测系统失败)
     counts: 各结果统计，如 {"AC": 8, "WA": 2}；评测完成前为 null
     """
 

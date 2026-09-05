@@ -23,11 +23,16 @@ async def lifespan(app: FastAPI):
     config.PROBLEMS_DIR.mkdir(parents=True, exist_ok=True)
     await ensure_admin()
     await ensure_languages()
+    await judge_service.normalize_legacy_results()
     # 重启恢复：重新评测遗留的 pending 提交
     await judge_service.requeue_pending()
     # AI 命题任务兜底：进程重启后遗留的 pending/running 标记为 failed
     await ai_service.fail_stale_tasks()
-    yield
+    try:
+        yield
+    finally:
+        await judge_service.shutdown()
+        await ai_service.shutdown()
 
 
 app = FastAPI(title="Online Judge", lifespan=lifespan)

@@ -119,3 +119,102 @@ def test_ai_page_renders_for_logged_in_user(monkeypatch):
     assert any("模型密钥" in l for l in labels)
     assert any("输入价格" in l for l in labels)
     assert any("输出价格" in l for l in labels)
+
+
+def _fake_api(monkeypatch, state):
+    import httpx
+    import json
+
+    def request(method, url, **kwargs):
+        path = httpx.URL(url).path
+        state.setdefault('requests', []).append((method, path, kwargs.get('json')))
+        headers = {}
+        if path == '/api/auth/login':
+            data = {'username': 'alice', 'user_id': '2', 'role': 'user'}
+            headers = {'set-cookie': 'oj_session=private-session-token; HttpOnly; Path=/'}
+        elif path == '/api/problems/':
+            data = []
+        elif path == '/api/ai/problem-tasks/7/cancel':
+            state['status'] = 'cancelled'
+            data = {'task_id': 7, 'status': 'cancelled'}
+        elif path == '/api/ai/problem-tasks/7':
+            from test_ai import GENERATED
+            data = {'task_id': 7, 'status': state.get('status', 'running'), 'progress': 0.4,
+                    'requirement': '测试命题', 'model': 'example', 'result': GENERATED,
+                    'usage': {'input_tokens': 100, 'output_tokens': 20, 'total_tokens': 120,
+                              'cost': 0.1, 'currency': 'CNY', 'price_source': 'provider'}}
+        elif path.endswith('/log'):
+            data = {'score': 10, 'counts': 40}
+        elif path == '/api/submissions/1':
+            data = {'submission_id': '1', 'status': 'success', 'score': 10, 'counts': 40,
+                    'compile_info': {'result': 'success', 'message': ''},
+                    'run_info': {'result': 'finished', 'message': '4 test cases finished'},
+                    'verdicts': {'AC': 1, 'WA': 3}}
+        else:
+            data = {}
+        return httpx.Response(200, json={'code': 200, 'msg': 'success', 'data': data},
+                              headers=headers, request=httpx.Request(method, url))
+    monkeypatch.setattr(httpx, 'request', request)
+
+
+def test_successful_login_does_not_put_credentials_in_url(monkeypatch):
+    _fake_api(monkeypatch, {})
+    at = AppTest.from_file(APP, default_timeout=30).run()
+    at.text_input[0].set_value('alice')
+    at.text_input[1].set_value('secret1')
+    at.button[0].click().run()
+    assert not at.exception
+    assert at.session_state['me']['username'] == 'alice'
+    assert at.session_state['cookies']['oj_session'] == 'private-session-token'
+    assert 'oj_s' not in at.query_params and 'oj_u' not in at.query_params
+
+
+def test_ai_progress_and_cancel_keep_current_page(monkeypatch):
+    state = {}
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
+    at.session_state['nav'] = '✨ AI 命题'
+    at.session_state['ai_view'] = 'task'
+    at.session_state['ai_task_id'] = 7
+    at.run()
+    assert not at.exception
+    assert not any('http-equiv="refresh"' in str(md.value) for md in at.markdown)
+    assert any('中断任务' in b.label for b in at.button)
+    assert any('Token' in m.label for m in at.metric)
+    next(b for b in at.button if '中断任务' in b.label).click().run()
+    assert not at.exception
+    assert state['status'] == 'cancelled'
+    assert at.session_state['ai_task_id'] == 7
+    assert at.session_state['nav'] == '✨ AI 命题'
+    assert any('已中断' in str(info.value) for info in at.info)
+
+
+def test_ai_result_can_be_reviewed_before_import(monkeypatch):
+    _fake_api(monkeypatch, {'status': 'done'})
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
+    at.session_state['nav'] = '✨ AI 命题'
+    at.session_state['ai_view'] = 'task'
+    at.session_state['ai_task_id'] = 7
+    at.run()
+    assert not at.exception
+    editor = next(area for area in at.text_area if '审阅' in area.label)
+    editor.set_value('not json')
+    next(b for b in at.button if '保存为新题目' in b.label).click().run()
+    assert not at.exception
+    assert any('JSON 格式错误' in str(e.value) for e in at.error)
+
+
+def test_submission_shows_partial_score_and_successful_compile(monkeypatch):
+    _fake_api(monkeypatch, {})
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
+    at.session_state['nav'] = '📜 评测记录'
+    at.session_state['sub_view'] = 'detail'
+    at.session_state['sub_id'] = '1'
+    at.run()
+    assert not at.exception
+    assert any('未通过' in str(w.value) for w in at.warning)
+    assert any('编译成功' in str(md.value) for md in at.markdown)
+    assert not any('编译错误' in str(md.value) for md in at.markdown)

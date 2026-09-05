@@ -23,7 +23,7 @@ API_BASE = os.environ.get("OJ_API_BASE", "http://127.0.0.1:8000")
 
 st.set_page_config(page_title="Online Judge", page_icon="⚖️", layout="wide")
 
-STATUS_TEXT = {"pending": "⏳ 等待评测", "success": "✅ 通过", "error": "❌ 未通过"}
+STATUS_TEXT = {"pending": "⏳ 等待评测", "success": "✅ 评测完成", "error": "❌ 评测失败"}
 VERDICT_TEXT = {
     "AC": "通过", "WA": "答案错误", "TLE": "超出时间限制",
     "MLE": "超出内存限制", "RE": "运行时错误", "CE": "编译错误",
@@ -41,8 +41,8 @@ class ApiError(Exception):
         self.msg = msg
 
 
-_SESSION_PARAM = "oj_s"   # URL 查询参数：会话 token（浏览器刷新后恢复登录态）
-_UID_PARAM = "oj_u"       # URL 查询参数：user_id（恢复时经后端重新校验，身份以后端会话为准）
+_SESSION_PARAM = "oj_s"   # 仅用于清理旧版 URL 凭据
+_UID_PARAM = "oj_u"
 
 
 def _clear_session():
@@ -59,44 +59,14 @@ def _clear_session():
 
 
 def _persist_login():
-    """登录成功后把会话 token/user_id 写入 URL 查询参数，浏览器刷新后可据此恢复。"""
-    cookies = st.session_state.get("cookies") or {}
-    me = st.session_state.get("me")
-    if not cookies or not me:
-        return
-    try:
-        token = next(iter(cookies.values()))
-        st.query_params[_SESSION_PARAM] = token
-        st.query_params[_UID_PARAM] = str(me.get("user_id"))
-    except Exception:
-        pass
+    """会话只留在当前 Streamlit 会话内，不能写入 URL、访问日志或分享链接。"""
+    for key in (_SESSION_PARAM, _UID_PARAM):
+        st.query_params.pop(key, None)
 
 
 def _restore_login():
-    """刷新后恢复登录态：从 URL 参数取 token 重新请求后端校验，后端仍是权限唯一来源。
-
-    Streamlit 的 session_state 随页面刷新丢失，因此登录态经 URL 参数跨刷新存活；
-    恢复时用 GET /api/users/{uid} 校验（本人或管理员可查），token/uid 被篡改或
-    会话过期都会校验失败并自动清除，回到未登录状态。
-    """
-    if st.session_state.get("me"):
-        return
-    try:
-        token = st.query_params.get(_SESSION_PARAM)
-        uid = st.query_params.get(_UID_PARAM)
-    except Exception:
-        return
-    if not token or not uid:
-        return
-    st.session_state["cookies"] = {"oj_session": token}   # 与后端 deps.SESSION_COOKIE 一致
-    try:
-        me = api("GET", f"/api/users/{uid}")
-    except ApiError:
-        # 校验失败：清掉 URL 参数与本地残留（api() 的 401 分支也会自动清）
-        st.session_state.pop("cookies", None)
-        _clear_session()
-        return
-    st.session_state["me"] = me
+    """清除旧版本遗留的 URL 凭据，不使用链接中的身份信息登录。"""
+    _persist_login()
 
 
 def api(method: str, path: str, **kwargs):
@@ -116,10 +86,11 @@ def api(method: str, path: str, **kwargs):
     except ValueError:
         raise ApiError(resp.status_code, f"后端返回非 JSON（HTTP {resp.status_code}）") from None
     st.session_state["cookies"] = dict(resp.cookies) or cookies   # 登录/登出会下发新 Cookie
-    if body.get("code") != 200:
+    if resp.status_code != 200 or body.get("code") != 200:
         if body.get("code") == 401:
             _clear_session()
-        raise ApiError(body.get("code"), body.get("msg", f"HTTP {resp.status_code}"))
+        raise ApiError(resp.status_code if resp.status_code != 200 else body.get("code"),
+                       body.get("msg", f"HTTP {resp.status_code}"))
     return body.get("data")
 
 
@@ -143,14 +114,28 @@ footer {visibility: hidden;}
 header[data-testid="stHeader"] {background: transparent; pointer-events: none;}
 .block-container {max-width: 1180px; padding-top: 2.2rem;}
 
+/* 页面背景：浅蓝调 + 网格圆点 + 角落光晕（fixed 固定于视口，随滚动保持） */
+[data-testid="stApp"] {
+  background:
+    radial-gradient(1000px 520px at 88% -8%, rgba(52, 152, 219, .10), transparent 62%) fixed,
+    radial-gradient(820px 460px at -8% 108%, rgba(45, 160, 152, .08), transparent 62%) fixed,
+    radial-gradient(circle, rgba(31, 35, 40, .05) 1px, transparent 1.5px) 0 0 / 28px 28px fixed,
+    linear-gradient(180deg, #f5f9fd 0%, #f8fbfe 100%) fixed;
+}
+
 /* 页面标题：力扣式蓝色短横线点缀 */
 h1 {font-weight: 800; color: #1f2328; padding-bottom: 6px;}
 h1::after {content: ""; display: block; width: 56px; height: 4px; margin-top: 8px;
-           border-radius: 2px; background: linear-gradient(90deg, #3498db, #7fc4f0);}
+           border-radius: 2px; background: linear-gradient(90deg, #3498db, #7fc4f0, #2dd4bf);}
 h2, h3 {color: #1f2328;}
 
-/* 侧边栏：白底 + 导航项胶囊高亮（选中蓝色底） */
-[data-testid="stSidebar"] {border-right: 1px solid #e5e7eb;}
+/* 侧边栏：蓝调渐变底 + 顶部彩带 + 品牌短横线，导航项胶囊高亮（选中蓝色底） */
+[data-testid="stSidebar"] {border-right: 1px solid #e5e7eb;
+  background: linear-gradient(180deg, #eef6fd 0%, #f8fafc 35%, #ffffff 100%);}
+[data-testid="stSidebar"]::before {content: ""; display: block; height: 4px;
+  background: linear-gradient(90deg, #3498db, #7fc4f0 55%, #2dd4bf);}
+[data-testid="stSidebar"] h2::after {content: ""; display: block; width: 44px; height: 3px;
+  margin-top: 6px; border-radius: 2px; background: linear-gradient(90deg, #3498db, #2dd4bf);}
 [data-testid="stSidebar"] [role="radiogroup"] label {
   padding: 8px 12px; border-radius: 8px; margin: 2px 0; transition: background .15s;}
 [data-testid="stSidebar"] [role="radiogroup"] label:hover {background: #f0f7fe;}
@@ -165,9 +150,14 @@ h2, h3 {color: #1f2328;}
 [data-testid="stBaseButton-primary"]:hover, button[kind="primary"]:hover {
   background: linear-gradient(135deg, #2f80c7, #276fae);}
 
-/* 指标卡：力扣统计卡（浅底圆角卡片） */
-[data-testid="stMetric"] {background: #f6f8fa; border: 1px solid #e5e7eb;
-  border-radius: 12px; padding: 14px 18px;}
+/* 指标卡：力扣统计卡（白底圆角卡片 + 顶部彩带 + 悬浮抬升） */
+[data-testid="stMetric"] {background: #fff; border: 1px solid #e5e7eb;
+  border-radius: 12px; padding: 14px 18px; position: relative; overflow: hidden;
+  transition: box-shadow .2s ease, transform .2s ease;}
+[data-testid="stMetric"]::before {content: ""; position: absolute; top: 0; left: 0; right: 0;
+  height: 3px; background: linear-gradient(90deg, #3498db, #7fc4f0);}
+[data-testid="stMetric"]:hover {box-shadow: 0 8px 18px rgba(31, 35, 40, .08);
+  transform: translateY(-2px);}
 [data-testid="stMetricValue"] {color: #1f2328; font-weight: 700;}
 [data-testid="stMetricLabel"] {color: #6b7280;}
 
@@ -190,9 +180,11 @@ button[role="tab"][aria-selected="true"] {color: #2f80c7; font-weight: 700;}
 hr {border-color: #e5e7eb;}
 [data-testid="stCaptionContainer"] {color: #6b7280;}
 
-/* 自定义 HTML 表格：洛谷题单风格卡片表 */
+/* 自定义 HTML 表格：洛谷题单风格卡片表（悬浮抬升） */
 .oj-card {border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; background: #fff;
-          box-shadow: 0 1px 2px rgba(0, 0, 0, .04); margin: .3rem 0 1rem;}
+          box-shadow: 0 1px 2px rgba(0, 0, 0, .04); margin: .3rem 0 1rem;
+          transition: box-shadow .2s ease, transform .2s ease;}
+.oj-card:hover {box-shadow: 0 8px 20px rgba(31, 35, 40, .09); transform: translateY(-2px);}
 .oj-table {width: 100%; border-collapse: collapse; font-size: 14px;}
 .oj-table thead th {background: #f6f8fa; color: #57606a; text-align: left; font-weight: 600;
                     padding: 10px 14px; border-bottom: 1px solid #e5e7eb;}
@@ -204,10 +196,17 @@ hr {border-color: #e5e7eb;}
 """
 
 _HERO = """
-<div style="background: linear-gradient(135deg, #3498db, #5eb0ec); border-radius: 14px;
-            padding: 26px 32px; color: #fff; margin: 0 0 1.1rem;">
-  <div style="font-size: 1.45rem; font-weight: 800;">⚖️ Online Judge</div>
-  <div style="opacity: .92; margin-top: 4px;">清华 Python 课程 · 实验二：在线评测系统</div>
+<div style="position: relative; overflow: hidden; background: linear-gradient(135deg, #3498db, #5eb0ec);
+            border-radius: 14px; padding: 26px 32px; color: #fff; margin: 0 0 1.1rem;
+            box-shadow: 0 8px 24px rgba(52, 152, 219, .25);">
+  <div style="position: absolute; width: 200px; height: 200px; border-radius: 50%;
+              background: rgba(255, 255, 255, .09); top: -70px; right: 90px;"></div>
+  <div style="position: absolute; width: 120px; height: 120px; border-radius: 50%;
+              background: rgba(255, 255, 255, .08); bottom: -45px; right: 240px;"></div>
+  <div style="position: absolute; width: 56px; height: 56px; border-radius: 50%;
+              background: rgba(255, 255, 255, .12); top: 16px; right: -14px;"></div>
+  <div style="position: relative; font-size: 1.45rem; font-weight: 800;">⚖️ Online Judge</div>
+  <div style="position: relative; opacity: .92; margin-top: 4px;">清华 Python 课程 · 实验二：在线评测系统</div>
 </div>
 """
 
@@ -344,7 +343,7 @@ def page_login():
             friendly_error(e)
         return
     st.session_state["me"] = me
-    _persist_login()   # 刷新不丢登录态
+    _persist_login()
     st.success(f"欢迎回来，{me['username']}！")
     time.sleep(0.5)
     st.rerun()
@@ -373,7 +372,7 @@ def page_register():
     # 注册成功后自动登录
     me = api("POST", "/api/auth/login", json={"username": username.strip(), "password": password})
     st.session_state["me"] = me
-    _persist_login()   # 刷新不丢登录态
+    _persist_login()
     st.success(f"注册成功，欢迎你，{me['username']}！")
     time.sleep(0.5)
     st.rerun()
@@ -723,7 +722,7 @@ def _problem_form():
     sample_list = case_list = None
     try:
         sample_list = json.loads(samples)
-        if not isinstance(sample_list, list) or any(
+        if not isinstance(sample_list, list) or not sample_list or any(
                 not isinstance(s, dict) or not isinstance(s.get("input"), str)
                 or not isinstance(s.get("output"), str) for s in sample_list):
             raise ValueError
@@ -731,7 +730,7 @@ def _problem_form():
         errors.append("样例必须是 JSON 数组，每项含字符串 input/output。")
     try:
         case_list = json.loads(testcases)
-        if not isinstance(case_list, list) or any(
+        if not isinstance(case_list, list) or not case_list or any(
                 not isinstance(c, dict) or not isinstance(c.get("input"), str)
                 or not isinstance(c.get("output"), str) for c in case_list):
             raise ValueError
@@ -825,7 +824,7 @@ def _submission_list():
     c1, c2 = st.columns(2)
     status = c1.selectbox("状态", ["全部", "pending", "success", "error"],
                           format_func=lambda x: {"全部": "全部", "pending": "等待中",
-                                                 "success": "通过", "error": "未通过"}[x])
+                                                 "success": "评测完成", "error": "评测失败"}[x])
     problem = c2.text_input("题目 ID（可选）", value=preset_problem)
     user_id = None
     if me.get("role") == "admin":
@@ -877,6 +876,7 @@ def _submission_list():
         st.rerun()
 
 
+@st.fragment(run_every=1.5)
 def _submission_detail():
     sid = st.session_state.get("sub_id")
     me = st.session_state.get("me")
@@ -888,19 +888,6 @@ def _submission_detail():
     except ApiError as e:
         friendly_error(e)
         return
-    if s.get("status") == "pending":
-        # 任务 3：轮询 submission_id 的评测状态与结果
-        for _ in range(60):
-            time.sleep(1)
-            try:
-                s = api("GET", f"/api/submissions/{sid}")
-            except ApiError as e:
-                friendly_error(e)
-                return
-            if s.get("status") != "pending":
-                break
-        else:
-            st.warning("等待超时，可稍后点击按钮刷新。")
     _render_submission(s, show_log=True)
     if s.get("status") == "pending" and st.button("🔄 手动刷新"):
         st.rerun()
@@ -914,23 +901,15 @@ def _submission_detail():
             friendly_error(e)
 
 
+@st.fragment(run_every=1.5)
 def _poll_submission(sid: str, show_log: bool):
-    """提交后的即时轮询展示：占位容器内实时更新，直到评测完成。"""
-    ph = st.empty()
-    for _ in range(60):
-        time.sleep(1)
-        try:
-            s = api("GET", f"/api/submissions/{sid}")
-        except ApiError as e:
-            with ph.container():
-                friendly_error(e)
-            return
-        with ph.container():
-            _render_submission(s, show_log=show_log)
-        if s.get("status") != "pending":
-            return
-    with ph.container():
-        st.warning("等待超时，可稍后到「评测记录」查看结果。")
+    """片段轮询保留登录、导航及表单状态，评测期间页面仍可操作。"""
+    try:
+        result = api("GET", f"/api/submissions/{sid}")
+    except ApiError as exc:
+        friendly_error(exc)
+        return
+    _render_submission(result, show_log=show_log)
 
 
 def _info_text(v):
@@ -954,14 +933,21 @@ def _render_submission(s: dict, show_log: bool):
     c1, c2 = st.columns(2)
     c1.metric("得分", score if score is not None else "—")
     c2.metric("总分", counts if counts is not None else "—")
+    if status == "success":
+        if counts and score == counts:
+            st.success("全部测试点通过。")
+        else:
+            st.warning("评测已完成，部分或全部测试点未通过；请查看结果及运行信息。")
     if verdicts:
         st.markdown(" ".join(_verdict_pill(k, v) for k, v in verdicts.items()),
                     unsafe_allow_html=True)
     # CE / RE / TLE 等错误明确展示（任务 3）
     # compile_info / run_info 为 api.md 对象结构 {"result", "message"}，展示 message
     if s.get("compile_info"):
-        st.markdown("#### 编译信息（编译错误）")
-        st.code(_info_text(s["compile_info"]))
+        info = s["compile_info"]
+        compiled = isinstance(info, dict) and info.get("result") == "success"
+        st.markdown("#### 编译信息（编译成功）" if compiled else "#### 编译信息（编译失败）")
+        st.code(_info_text(info) or "编译成功")
     if s.get("run_info"):
         st.markdown("#### 运行信息")
         st.code(_info_text(s["run_info"]))
@@ -990,6 +976,7 @@ def _render_submission(s: dict, show_log: bool):
 def _ai_usage_panel(usage: dict):
     """R4：Token 用量与费用展示，附计价依据说明（advance.md 要求透明）。"""
     if not usage:
+        st.caption("模型尚未返回用量，当前 Token 用量和费用未知。")
         return
     c1, c2, c3 = st.columns(3)
     c1.metric("输入 Token", usage.get("input_tokens", "—"))
@@ -998,7 +985,7 @@ def _ai_usage_panel(usage: dict):
     cost = usage.get("cost")
     c4, c5, c6 = st.columns(3)
     c4.metric("费用", f"{cost} {usage.get('currency', '')}" if cost is not None else "—")
-    c5.metric("计价依据", {"provider": "接口返回", "config": "手动配置", "unknown": "未配置"}.get(usage.get("price_source"), "—"))
+    c5.metric("计价依据", {"provider": "接口返回", "config": "手动配置", "unknown": "未配置", "mixed": "多次调用"}.get(usage.get("price_source"), "—"))
     c6.metric("用量来源", "字符估算" if usage.get("estimated") else "接口返回")
     notes = {
         "provider": "费用由模型接口直接返回。",
@@ -1007,7 +994,7 @@ def _ai_usage_panel(usage: dict):
         "unknown": "未填写输入/输出价格，无法自动计算费用；可在模型配置中填写价格（不同模型、不同时段价格可能不同）。",
     }
     st.caption(f"计价依据：{notes.get(usage.get('price_source'), '—')}"
-               f"{'；模型接口未返回 Token 用量，按字符数/4 估算。' if usage.get('estimated') else ''}")
+               f"{'；模型接口未完整返回 Token 用量，缺失部分按字符数/4 估算，包含系统提示词；估算不等同账单。' if usage.get('estimated') else ''}")
 
 
 def _render_ai_result(result: dict, problem_id: str | None):
@@ -1039,10 +1026,22 @@ def _render_ai_result(result: dict, problem_id: str | None):
     with tab_cases:
         st.caption(f"共 {len(result.get('testcases') or [])} 个测试点")
         for t in result.get("testcases") or []:
-            st.markdown(f"**#{t.get('id', '?')}** · 输入 {len(t.get('input', ''))} 字符 · 输出 {len(t.get('output', ''))} 字符")
+            with st.expander(f"测试点 #{t.get('id', '?')}"):
+                st.code(t.get("input", ""), language="text")
+                st.code(t.get("output", ""), language="text")
 
+    reviewed = st.text_area("审阅并修改题目 JSON（保存时使用此内容）",
+                            value=json.dumps(result, ensure_ascii=False, indent=2),
+                            height=260, key=f"ai-review-{st.session_state.get('ai_task_id')}")
     label = f"💾 保存修改到 {problem_id}" if problem_id else "💾 保存为新题目"
     if st.button(label, type="primary", width="stretch"):
+        try:
+            result = json.loads(reviewed)
+            if not isinstance(result, dict):
+                raise ValueError("题目必须是 JSON 对象")
+        except ValueError:
+            st.error("题目 JSON 格式错误，请检查后再保存。")
+            return
         try:
             if problem_id:
                 api("PUT", f"/api/problems/{problem_id}", json=result)
@@ -1059,6 +1058,7 @@ def _render_ai_result(result: dict, problem_id: str | None):
             friendly_error(e)
 
 
+@st.fragment(run_every=1.5)
 def _ai_task_detail():
     tid = st.session_state.get("ai_task_id")
     if st.button("← 返回 AI 命题页"):
@@ -1079,8 +1079,8 @@ def _ai_task_detail():
 
     if status in ("pending", "running"):
         # 每秒自动刷新实现实时进度（R3）；页面不阻塞，「中断任务」可随时点击
-        st.markdown('<meta http-equiv="refresh" content="1">', unsafe_allow_html=True)
-        st.caption("页面每秒自动刷新，可实时查看进度；中断任务会真正终止后台执行。")
+        st.caption("进度每 1.5 秒自动更新；中断任务会终止后台执行。")
+        _ai_usage_panel(d.get("usage"))
         if st.button("🛑 中断任务", width="stretch"):
             try:
                 api("PUT", f"/api/ai/problem-tasks/{tid}/cancel")
@@ -1131,10 +1131,11 @@ def _ai_home():
             api_key = st.text_input("模型密钥", type="password",
                                     help="仅加密存储；保存后不回显，修改配置时需重新填写")
             c1, c2 = st.columns(2)
-            input_price = c1.text_input("输入价格（元/计价单位，可选）",
+            input_price = c1.text_input("输入价格（所选币种/计价单位，可选）",
                                         value=str(cfg["input_price"]) if cfg.get("input_price") is not None else "")
-            output_price = c2.text_input("输出价格（元/计价单位，可选）",
+            output_price = c2.text_input("输出价格（所选币种/计价单位，可选）",
                                          value=str(cfg["output_price"]) if cfg.get("output_price") is not None else "")
+            currency = st.selectbox("价格币种", ["CNY", "USD"], index=1 if cfg.get("currency") == "USD" else 0)
             price_unit = st.text_input("计价单位（Token 数）", value=str(cfg.get("price_unit") or 1000000))
             st.caption("⚠ 不同模型、不同时段的计费价格可能不同（部分厂商设有错峰优惠时段），请按实际调用时段的官方价格填写。")
             if st.form_submit_button("保存配置", width="stretch"):
@@ -1170,7 +1171,7 @@ def _ai_home():
                     try:
                         api("PUT", "/api/ai/model-config", json={
                             "provider_url": provider_url.strip(), "model": model.strip(),
-                            "api_key": api_key, "price_unit": unit, **prices,
+                            "api_key": api_key, "price_unit": unit, "currency": currency, **prices,
                         })
                         st.success("模型配置已保存。")
                         time.sleep(0.4)

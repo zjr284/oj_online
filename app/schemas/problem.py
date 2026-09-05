@@ -39,7 +39,7 @@ class ProblemConfig(BaseModel):
     hint: str = ""
     source: str = ""
     tags: list[str] = []
-    time_limit: float = Field(default=3.0, gt=0)
+    time_limit: float = Field(default=3.0, gt=0, allow_inf_nan=False)
     memory_limit: int = Field(default=128, gt=0)
     author: str = ""
     difficulty: str = ""

@@ -1,4 +1,5 @@
 """Step 4 认证接口：登录 / 登出（注册见 users.py）。"""
+import asyncio
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -24,7 +25,7 @@ async def login(
     db: AsyncSession = Depends(get_db),
 ):
     user = await db.scalar(select(User).where(User.username == body.username))
-    if user is None or not verify_password(body.password, user.password_hash):
+    if user is None or not await asyncio.to_thread(verify_password, body.password, user.password_hash):
         raise ApiError(401, "wrong username or password")
     if user.role == "banned":
         raise ApiError(403, "user is banned")
@@ -40,7 +41,7 @@ async def login(
 async def logout(request: Request, response: Response, db: AsyncSession = Depends(get_db)):
     token = request.cookies.get(SESSION_COOKIE)
     session = await db.get(Session, token) if token else None
-    if session is None:
+    if session is None or session.expires_at < datetime.now():
         raise ApiError(401, "not logged in")
     await db.delete(session)
     await db.commit()

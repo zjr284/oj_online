@@ -230,11 +230,11 @@ async def test_user_stats_semantics(client):
     async with SessionLocal() as db:
         db.add_all([
             Submission(user_id=alice_id, problem_id="p1", language="python", code="print(1)",
-                       status="success"),
+                       status="success", score=10, total_score=10),
             Submission(user_id=alice_id, problem_id="p1", language="python", code="print(1)",
                        status="error"),
             Submission(user_id=alice_id, problem_id="p2", language="python", code="print(1)",
-                       status="success"),
+                       status="success", score=10, total_score=10),
             Submission(user_id=alice_id, problem_id="p3", language="python", code="print(1)",
                        status="pending"),
         ])

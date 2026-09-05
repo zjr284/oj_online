@@ -11,6 +11,8 @@
 安全要求（api.md）：api_key 不得经任何接口返回；费用公式与用量统计见
 app/services/ai_service.py（模型不返回用量时按字符数估算并标注 estimated）。
 """
+from app.core.routing import AuthenticatedRoute
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
@@ -20,7 +22,7 @@ from app.models import User
 from app.schemas.ai import AiTaskIn, ModelConfigIn
 from app.services import ai_service
 
-router = APIRouter(prefix="/api/ai", tags=["ai"])
+router = APIRouter(route_class=AuthenticatedRoute, prefix="/api/ai", tags=["ai"])
 
 
 @router.put("/model-config")
@@ -46,6 +48,7 @@ async def get_model_config(user: User = Depends(get_current_user)):
         "input_price": cfg["input_price"],
         "output_price": cfg["output_price"],
         "price_unit": cfg["price_unit"],
+        "currency": cfg.get("currency", "CNY"),
         "api_key_configured": True,
     })
 

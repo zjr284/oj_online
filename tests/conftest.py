@@ -19,11 +19,16 @@ from app import config
 from app.database import Base, engine
 from app.main import app
 from app.services.user_service import ensure_admin
+from app.services import ai_service, judge_service
+from app.routers import submissions
 
 
 @pytest_asyncio.fixture
 async def client():
     """每个测试用例使用全新的数据库、题目目录与初始管理员。"""
+    await judge_service.shutdown()
+    await ai_service.shutdown()
+    submissions.submit_limiter._hits.clear()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
@@ -35,6 +40,9 @@ async def client():
     await ensure_admin()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
+    await judge_service.shutdown()
+    await ai_service.shutdown()
+    await engine.dispose()
 
 
 async def login(client: AsyncClient, username: str, password: str) -> None:

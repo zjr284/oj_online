@@ -31,11 +31,13 @@ routers（HTTP 语义）→ services（业务逻辑）→ models / ProblemStore�
 
 ## 状态
 
-已实现：Step 1–6 + Advance AI 命题全部完成——题目管理（含 log_visibility）、评测引擎（沙箱/CE/TLE/MLE/RE/AC/WA）、
+已实现：Step 1–6 + Advance AI 命题主要功能（符合性核对见 EXPERIMENT2_AUDIT.md）——题目管理（含 log_visibility）、评测引擎（资源控制/CE/TLE/MLE/RE/AC/WA）、
 评测管理（异步编排/重判代际/重启恢复/限流 429）、用户管理（bcrypt/操作日志/角色权限）、
 评测日志（明细可见性 + 访问审计）、Step 6 前端：Streamlit（app.py，step6.md 要求，题目/评测/用户管理/
 访问审计/AI 命题页面，Cookie 经 httpx 传递、表单提交前格式检查、提交后轮询；
-洛谷×力扣主题：.streamlit/config.toml 配色 + app.py `_UI_CSS` 全局样式与 `_badge`/`_html_table` 徽章表格）、
+洛谷×力扣主题：.streamlit/config.toml 配色 + app.py `_UI_CSS` 全局样式与 `_badge`/`_html_table` 徽章表格、
+装饰层：stApp 浅蓝渐变底 + 圆点网格 + 角落光晕（`background-attachment: fixed`）、侧边栏渐变底 + 顶部彩带 +
+品牌短横线、`_HERO` 横幅装饰圆、指标卡/oj-card 悬浮抬升）、
 AI 命题（model-config/problem-tasks/SSE 进度/取消/用量计费，api_key Fernet 加密永不返回；
 R3：模型调用期间 ticker 每 2s 推进度、cancel 推 final(cancelled) 即时通知观察者；
 费用 = 用户填写价格或接口返回 usage.cost，未填且接口未返回则 cost=null 标注；
@@ -54,10 +56,12 @@ R3：模型调用期间 ticker 每 2s 推进度、cancel 推 final(cancelled) �
 - 侧边栏导航 radio 用 `key="nav"` 绑定 session_state、只在首次/失效时播种默认值；
   切勿每次 rerun 传 `index=旧值`，否则覆盖用户刚点的选项导致需双击才能切页（streamlit#3534）。
   透明 stHeader 需加 `pointer-events: none`，避免不可见的固定头栏拦截顶部区域点击。
-- 刷新不丢登录态：session_state 随刷新丢失，登录/注册成功后 `_persist_login` 把会话 token 与
-  user_id 写入 URL 查询参数（oj_s/oj_u）；main() 启动时 `_restore_login` 重新请求后端
-  GET /api/users/{uid} 校验（本人或管理员可查），身份以后端会话为准，伪造/过期自动清除并回未登录；
-  登出与会话过期时 `_clear_session` 清掉 URL 参数。本版 Streamlit 无 st.cookies 可用。
+- 登录 Cookie 只保存在 Streamlit session_state 中，禁止写入 URL；旧版 oj_s/oj_u 会被移除。
+  整页刷新后需重新登录。评测和 AI 进度使用 st.fragment 的 1.5 秒片段轮询，不能用 meta refresh。
+- success 表示评测正常返回结果，WA/TLE/MLE/RE 均属于 success；全部 AC 才增加 resolve_count。
+  error 用于 CE 或评测系统错误。题目显式限制优先于语言限制，再回退至系统默认。
+- 题目编辑省略 public_cases 时保留原策略；普通用户不能经题目增改接口更改公开策略。
+- AuthenticatedRoute 在解析请求体之前认证，确保畸形 JSON/非法路径也遵循 401 > 403 > 400。
 - 提交列表 error/pending 条目只返回 {submission_id, status}（api.md）；submission_id、user_id 均为字符串。
 - api.md 字段语义（2026-09 审计后对齐）：`counts` = 本题总分数（测试点数目×10，DB 列 total_score）；
   各结果统计经 extra 字段 `verdicts` 返回（DB 列 counts 存 dict）；
@@ -66,6 +70,8 @@ R3：模型调用期间 ticker 每 2s 推进度、cancel 推 final(cancelled) �
   用户列表按 submit_count 降序（并列按 user_id 升序，翻页稳定），与 api.md 示例一致。
 - 安全校验：题目 id 限 `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`（防经 body 的路径穿越）、
   必填字段非空、samples/testcases 非空、time/memory 限制为正；语言 name/file_ext 限安全字符集。
-- 评测沙箱：运行与编译阶段均限 RLIMIT_CPU/RLIMIT_FSIZE/RLIMIT_NPROC(4096)；
+- 本机评测资源控制（不提供容器级隔离）：运行与编译阶段均限 RLIMIT_CPU/RLIMIT_FSIZE/RLIMIT_NPROC(4096)；
   NPROC 取 4096 是因为 Linux 按 UID 全系统线程数计数（VSCode 等占数百），过低会让 g++ vfork EAGAIN。
-- reset 会重建初始管理员**并恢复默认语言**（python/cpp）。
+- reset 先停止评测和 AI 任务，清空限流与模型配置，再重建初始管理员和默认语言。
+
+- AI SSE 每个订阅者使用独立队列，避免分走终态事件；配置在创建任务时固定。重试累计用量，校验失败保留用量。

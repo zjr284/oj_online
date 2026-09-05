@@ -4,6 +4,8 @@
 """
 import shutil
 
+from app.core.routing import AuthenticatedRoute
+
 from fastapi import APIRouter, Depends, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,8 +16,10 @@ from app.database import Base, engine, get_db
 from app.models import User
 from app.services.language_service import ensure_languages
 from app.services.user_service import ensure_admin
+from app.services import ai_service, judge_service
+from app.routers import submissions
 
-router = APIRouter(tags=["maintenance"])
+router = APIRouter(route_class=AuthenticatedRoute, tags=["maintenance"])
 
 
 @router.post("/api/reset/")
@@ -24,6 +28,12 @@ async def reset(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
+    # 先停止后台写入，防止重置后的 ID 被旧任务结果覆盖。
+    await judge_service.shutdown()
+    await ai_service.shutdown()
+    submissions.submit_limiter._hits.clear()
+    # 释放认证读取事务，避免 SQLite drop_all 被当前请求自身阻塞。
+    await db.rollback()
     # 1. 清空数据库（含会话，即“退出登录”）
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
@@ -32,6 +42,8 @@ async def reset(
     # 2. 清空题目目录
     shutil.rmtree(config.PROBLEMS_DIR, ignore_errors=True)
     config.PROBLEMS_DIR.mkdir(parents=True, exist_ok=True)
+    ai_service.CONFIG_PATH.unlink(missing_ok=True)
+    ai_service.KEY_PATH.unlink(missing_ok=True)
 
     # 3. 重建初始管理员与默认语言（恢复系统初始环境）
     await ensure_admin()

@@ -4,6 +4,8 @@
 page 空 page_size 非空 = 第一页；page 非空 page_size 空 = 参数错误。
 列表按 submit_count 降序（并列按 user_id 升序），与 api.md 示例一致。
 """
+from app.core.routing import AuthenticatedRoute
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +17,7 @@ from app.models import RoleChangeLog, Submission, User
 from app.schemas.user import RegisterIn, RoleIn
 from app.services.user_service import create_user, user_detail, user_public
 
-router = APIRouter(prefix="/api/users", tags=["users"])
+router = APIRouter(route_class=AuthenticatedRoute, prefix="/api/users", tags=["users"])
 
 VALID_ROLES = ("admin", "user", "banned")
 

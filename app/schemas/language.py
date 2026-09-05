@@ -16,5 +16,5 @@ class LanguageIn(BaseModel):
     file_ext: str = Field(pattern=EXT_RE)
     compile_cmd: str | None = Field(default=None, max_length=256)
     run_cmd: str = Field(max_length=256)
-    time_limit: float | None = Field(default=None, gt=0)    # 缺省使用题目限制
+    time_limit: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     memory_limit: int | None = Field(default=None, gt=0)

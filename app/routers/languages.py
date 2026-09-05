@@ -6,6 +6,11 @@
 权限说明（Step 2 任务 3 / Step 4 权限回溯）：注册语言可由任意
 「已登录用户」执行；未登录 401，被封禁 403。
 """
+from app.core.routing import AuthenticatedRoute
+
+import re
+import shlex
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
@@ -17,7 +22,7 @@ from app.database import get_db
 from app.models import Language, User
 from app.schemas.language import LanguageIn
 
-router = APIRouter(prefix="/api/languages", tags=["languages"])
+router = APIRouter(route_class=AuthenticatedRoute, prefix="/api/languages", tags=["languages"])
 
 PLACEHOLDERS = ("{src}", "{exe}")
 
@@ -28,6 +33,19 @@ def _validate_cmd(lang: LanguageIn) -> None:
         raise ApiError(400, "run_cmd must contain {src} or {exe}")
     if lang.compile_cmd and not any(p in lang.compile_cmd for p in PLACEHOLDERS):
         raise ApiError(400, "compile_cmd must contain {src} or {exe}")
+    for command in (lang.compile_cmd, lang.run_cmd):
+        if not command:
+            continue
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            raise ApiError(400, "invalid command quoting")
+        if not parts or "\x00" in command:
+            raise ApiError(400, "invalid command")
+        if any(p not in ("src", "exe") for p in re.findall(r"\{([^{}]*)\}", command)):
+            raise ApiError(400, "unknown command placeholder")
+        if any(part in ("|", "||", "&&", ";", ">", ">>", "<") for part in parts):
+            raise ApiError(400, "shell operators are not supported")
 
 
 @router.get("/")

@@ -4,6 +4,8 @@
 action 仅为 view_logs；status 记录访问结果（200 允许 / 403 拒绝）。
 不记录：未登录、评测不存在、参数错误的访问（见 submissions.py 的 log 接口）。
 """
+from app.core.routing import AuthenticatedRoute
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +15,7 @@ from app.core.errors import ApiError, ok
 from app.database import get_db
 from app.models import AccessLog, User
 
-router = APIRouter(prefix="/api/logs", tags=["logs"])
+router = APIRouter(route_class=AuthenticatedRoute, prefix="/api/logs", tags=["logs"])
 
 
 @router.get("/access/")

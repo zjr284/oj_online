@@ -23,3 +23,6 @@ data/ai_secret.key
 # 日志与临时文件
 *.log
 .DS_Store
+
+# 可复现的性能测试数据（由 scripts/build_find_range_stress.py 生成）
+data/generated/

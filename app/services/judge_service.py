@@ -17,7 +17,7 @@ from sqlalchemy import delete, select
 
 from app.core.errors import ApiError
 from app.database import SessionLocal
-from app.judge.runner import AC, CE, JudgeRunner
+from app.judge.runner import AC, UNK, JudgeRunner
 from app.models import Language, Submission, TestcaseResult
 from app.services.problem_store import store
 
@@ -36,14 +36,26 @@ def schedule_judge(submission_id: int) -> None:
     gen = _generations[submission_id]
     task = asyncio.create_task(judge_submission(submission_id, gen))
     _judge_tasks[submission_id] = task
-    task.add_done_callback(lambda _t: _judge_tasks.pop(submission_id, None))
+    def done(completed):
+        if _judge_tasks.get(submission_id) is completed:
+            _judge_tasks.pop(submission_id, None)
+    task.add_done_callback(done)
 
 
-def cancel_judge(submission_id: int) -> None:
+async def cancel_judge(submission_id: int) -> None:
     """取消进行中的评测任务（rejudge 前调用）。"""
+    _generations[submission_id] = _generations.get(submission_id, 0) + 1
     task = _judge_tasks.get(submission_id)
     if task is not None and not task.done():
         task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def shutdown() -> None:
+    for sid in list(_judge_tasks):
+        await cancel_judge(sid)
+    _judge_tasks.clear()
+    _generations.clear()
 
 
 async def judge_submission(submission_id: int, generation: int) -> None:
@@ -67,7 +79,7 @@ async def _judge(submission_id: int, generation: int, workdir: Path) -> None:
         sub = await db.get(Submission, submission_id)
         if sub is None:
             return
-        problem = await store.get(sub.problem_id)
+        problem = await store.get(sub.problem_id, for_judge=True)
         language = await db.get(Language, sub.language)
 
     if language is None:
@@ -99,12 +111,13 @@ async def _judge(submission_id: int, generation: int, workdir: Path) -> None:
         results.append(await runner.run_case(case, idx))
 
     counts = dict(Counter(r.result for r in results))
-    status = "success" if all(r.result == AC for r in results) else "error"
+    # success 表示完成判题；WA/TLE/MLE/RE 是正常产生的测试点结果。
+    status = "error" if any(r.result == UNK for r in results) else "success"
     score = counts.get(AC, 0) * POINTS_PER_CASE
 
     # api.md：run_info = {"result": ..., "message": ...}（运行阶段总体结果）
     run_msg = f"{len(results)} test cases finished"
-    if status == "error":
+    if any(r.result != AC for r in results):
         first_bad = next((r for r in results if r.result != AC), None)
         if first_bad is not None:
             run_msg += f"; first failure at case {first_bad.case_id}: {first_bad.result}"
@@ -112,12 +125,15 @@ async def _judge(submission_id: int, generation: int, workdir: Path) -> None:
                 run_msg += f"\n{first_bad.detail}"
     run_info = {"result": "finished", "message": run_msg}
 
-    await _finish(submission_id, generation, status, score, counts, compile_info, results,
-                  run_info=run_info, total_score=total)
+    compile_obj = ({"result": "success", "message": compile_info or ""}
+                   if language.compile_cmd else None)
+    await _finish(submission_id, generation, status, score, counts, compile_obj, results,
+                  run_info=run_info, total_score=total,
+                  error_info="cannot start judge process" if status == "error" else None)
 
 
 async def _finish(submission_id: int, generation: int, status: str, score: float, counts: dict,
-                  compile_info: str | None, results: list, run_info: str | None = None,
+                  compile_info: dict | None, results: list, run_info: dict | None = None,
                   error_info: str | None = None, total_score: int | None = None) -> None:
     """写回评测结果。若期间发生了 rejudge（代际变化），丢弃本次结果。
 
@@ -130,6 +146,8 @@ async def _finish(submission_id: int, generation: int, status: str, score: float
     async with SessionLocal() as db:
         sub = await db.get(Submission, submission_id)
         if sub is None:
+            return
+        if _generations.get(submission_id) != generation:
             return
         sub.status = status
         sub.score = score
@@ -153,3 +171,22 @@ async def requeue_pending() -> None:
         ids = (await db.scalars(select(Submission.id).where(Submission.status == "pending"))).all()
     for sid in ids:
         schedule_judge(sid)
+
+
+async def normalize_legacy_results() -> None:
+    """保留历史得分和日志，修复旧版把 WA/TLE/MLE/RE 标为 error 的记录。"""
+    async with SessionLocal() as db:
+        records = (await db.scalars(select(Submission).where(Submission.status != "pending"))).all()
+        for sub in records:
+            if sub.counts and set(sub.counts) <= {"AC", "WA", "TLE", "MLE", "RE"}:
+                sub.status = "success"
+                language = await db.get(Language, sub.language)
+                if language and language.compile_cmd:
+                    raw = sub.compile_info
+                    try:
+                        value = json.loads(raw) if raw else None
+                    except ValueError:
+                        value = raw
+                    if not isinstance(value, dict):
+                        sub.compile_info = json.dumps({"result": "success", "message": value or ""})
+        await db.commit()

@@ -17,12 +17,16 @@
 """
 import asyncio
 import json
+import math
+import os
 import re
+import threading
+from urllib.parse import urlsplit
 
 import httpx
 from cryptography.fernet import Fernet
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import config
@@ -50,7 +54,7 @@ KEY_PATH = config.DATA_DIR / "ai_secret.key"
 
 # 运行中的后台任务与事件队列（进程内；重启后由 fail_stale_tasks 兜底）
 _tasks: dict[int, asyncio.Task] = {}
-_events: dict[int, asyncio.Queue] = {}
+_events: dict[int, set[asyncio.Queue]] = {}
 _cancelled: set[int] = set()
 
 SYSTEM_PROMPT = """你是 OJ 在线评测系统的出题助手。请根据用户需求生成一道编程题，并只输出一个 JSON 对象（不要 markdown 代码块，不要任何多余文字），字段如下：
@@ -71,13 +75,26 @@ SYSTEM_PROMPT = """你是 OJ 在线评测系统的出题助手。请根据用户
   "author": "AI",
   "difficulty": "入门/简单/中等/困难"
 }
-要求：samples 给出 1~2 个样例；testcases 给出 4~8 个测试点，覆盖最小/最大边界与特殊情形；time_limit、memory_limit 取值合理；难度与知识点符合需求。"""
+要求：明确落实用户指定的知识点、难度和每项约束；题面、输入输出、数据范围必须一致。
+samples 给出至少两个可手工核验的样例。testcases 覆盖最小规模、零值/负数（适用时）、重复元素、
+极值、退化结构和具有区分度的数据规模；按目标算法复杂度设计能识别常见错误和低效算法的用例。
+不要只用几个很小的随机数字代替边界或复杂度测试。逐个复核期望输出与输入的对应关系。
+time_limit、memory_limit 应与目标算法及数据范围相符。仅在用户需求适用时采用相应边界。"""
 
 
 # ---- 模型配置（api_key 加密存储） ----
 
 class ModelConfigStore:
     """模型配置存取：api_key 经 Fernet 加密，只读时在内存中解密。"""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+
+    async def _locked(self, operation):
+        def run():
+            with self._lock:
+                return operation()
+        return await asyncio.to_thread(run)
 
     async def load(self) -> dict | None:
         """读取完整配置（含解密后的 api_key）；未配置返回 None。"""
@@ -93,7 +110,7 @@ class ModelConfigStore:
                 raise ApiError(500, "ai config corrupted: cannot decrypt api_key")
             return data
 
-        return await asyncio.to_thread(_read)
+        return await self._locked(_read)
 
     async def save(self, cfg: ModelConfigIn) -> dict:
         """保存配置；返回不含 api_key 的公开字段（api.md）。"""
@@ -106,14 +123,16 @@ class ModelConfigStore:
                 "input_price": cfg.input_price,
                 "output_price": cfg.output_price,
                 "price_unit": cfg.price_unit or DEFAULT_PRICE_UNIT,
+                "currency": cfg.currency,
                 "api_key_encrypted": Fernet(key).encrypt(cfg.api_key.strip().encode()).decode(),
             }
-            CONFIG_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            store._replace(CONFIG_PATH, json.dumps(data, ensure_ascii=False, indent=2))
+            CONFIG_PATH.chmod(0o600)
             public = {k: v for k, v in data.items() if k != "api_key_encrypted"}
             public["api_key_configured"] = True
             return public
 
-        return await asyncio.to_thread(_write)
+        return await self._locked(_write)
 
     @staticmethod
     def _load_key() -> bytes:
@@ -121,8 +140,9 @@ class ModelConfigStore:
         if KEY_PATH.is_file():
             return KEY_PATH.read_bytes()
         key = Fernet.generate_key()
-        KEY_PATH.write_bytes(key)
-        KEY_PATH.chmod(0o600)
+        KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with os.fdopen(os.open(KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:
+            f.write(key)
         return key
 
 
@@ -159,9 +179,13 @@ def parse_problem(content: str) -> dict:
         except json.JSONDecodeError:
             raise RuntimeError("model output is not valid JSON")
     try:
-        return ProblemConfig.model_validate(data).model_dump()
+        result = ProblemConfig.model_validate(data).model_dump(exclude_none=True)
+        # 日志公开权限只由管理员维护；模型不能修改它。
+        result.pop("public_cases", None)
+        return result
     except ValidationError as e:
-        raise RuntimeError(f"generated problem failed validation: {str(e)[:300]}")
+        fields = [".".join(map(str, error["loc"])) for error in e.errors()]
+        raise RuntimeError(f"generated problem failed validation: {', '.join(fields)[:200]}")
 
 
 def build_usage(cfg: dict, raw: dict, content: str, prompt: str) -> dict:
@@ -173,12 +197,18 @@ def build_usage(cfg: dict, raw: dict, content: str, prompt: str) -> dict:
     3. unknown：未填价格且接口未返回费用，cost 为 None（页面明确标注）。
     用量缺失时按 字符数/4 估算，estimated=true 标注。
     """
-    inp, out = raw.get("prompt_tokens"), raw.get("completion_tokens")
+    raw = raw if isinstance(raw, dict) else {}
+    inp = raw.get("prompt_tokens", raw.get("input_tokens"))
+    out = raw.get("completion_tokens", raw.get("output_tokens"))
+    def valid_tokens(value):
+        return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    inp = inp if valid_tokens(inp) else None
+    out = out if valid_tokens(out) else None
     estimated = inp is None or out is None
     if inp is None:
-        inp = max(1, len(prompt) // 4)
+        inp = max(1, math.ceil((len(SYSTEM_PROMPT) + len(prompt)) / 4))
     if out is None:
-        out = max(1, len(content) // 4)
+        out = max(1, math.ceil(len(content) / 4))
     inp, out = int(inp), int(out)
 
     base = {
@@ -189,7 +219,8 @@ def build_usage(cfg: dict, raw: dict, content: str, prompt: str) -> dict:
     }
 
     # 1. 提供方直接计费
-    if isinstance(raw.get("cost"), (int, float)):
+    if (isinstance(raw.get("cost"), (int, float)) and not isinstance(raw["cost"], bool)
+            and math.isfinite(raw["cost"]) and raw["cost"] >= 0):
         return {
             **base,
             "cost": round(float(raw["cost"]), 6),
@@ -203,7 +234,7 @@ def build_usage(cfg: dict, raw: dict, content: str, prompt: str) -> dict:
         return {
             **base,
             "cost": round(inp / unit * cfg["input_price"] + out / unit * cfg["output_price"], 6),
-            "currency": CURRENCY,
+            "currency": cfg.get("currency", CURRENCY),
             "price_unit": unit,
             "input_price": cfg["input_price"],
             "output_price": cfg["output_price"],
@@ -211,7 +242,25 @@ def build_usage(cfg: dict, raw: dict, content: str, prompt: str) -> dict:
         }
 
     # 3. 无价格信息
-    return {**base, "cost": None, "currency": CURRENCY, "price_source": "unknown"}
+    return {**base, "cost": None, "currency": cfg.get("currency", CURRENCY), "price_source": "unknown"}
+
+
+def merge_usage(previous: dict | None, current: dict) -> dict:
+    """重试也会计费；保留每次调用明细，汇总已知的全部调用。"""
+    calls = [*(previous.get("calls", []) if previous else []), current]
+    total = dict(current)
+    total["calls"] = calls
+    for key in ("input_tokens", "output_tokens", "total_tokens"):
+        total[key] = sum(call[key] for call in calls)
+    total["estimated"] = any(call["estimated"] for call in calls)
+    total["cost"] = (round(sum(call["cost"] for call in calls), 6)
+                     if all(call["cost"] is not None and call["currency"] == current["currency"]
+                            for call in calls) else None)
+    if total["cost"] is None:
+        total["price_source"] = "unknown"
+    elif len({call["price_source"] for call in calls}) > 1:
+        total["price_source"] = "mixed"
+    return total
 
 
 def _sanitize(msg: str, secret: str | None) -> str:
@@ -226,17 +275,21 @@ async def _request_model(cfg: dict, payload: dict) -> dict:
     headers = {"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"}
     timeout = httpx.Timeout(REQUEST_TIMEOUT, connect=15.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(cfg["provider_url"], json=payload, headers=headers)
+        url = cfg["provider_url"].rstrip("/")
+        if not urlsplit(url).path or url.endswith("/v1"):
+            url += "/chat/completions"
+        resp = await client.post(url, json=payload, headers=headers)
     if resp.status_code != 200:
         hint = ""
         if resp.status_code == 404:
             hint = ("（provider_url 需指向完整的 OpenAI 兼容 chat/completions 接口地址，"
                     "如 https://api.deepseek.com/chat/completions，不能只填域名）")
-        raise RuntimeError(f"model api returned HTTP {resp.status_code}: {resp.text[:200]}{hint}")
+        safe_text = _sanitize(resp.text, cfg["api_key"])[:200]
+        raise RuntimeError(f"model api returned HTTP {resp.status_code}: {safe_text}{hint}")
     return resp.json()
 
 
-async def _call_model(cfg: dict, prompt: str) -> tuple[dict, str]:
+async def _call_model(cfg: dict, prompt: str, on_usage=None) -> tuple[dict, str]:
     """调用 OpenAI 兼容 chat/completions 协议；返回 (usage, content)。
 
     健壮性（api.md 要求处理模型调用失败）：
@@ -255,14 +308,19 @@ async def _call_model(cfg: dict, prompt: str) -> tuple[dict, str]:
     if "reasoner" not in cfg["model"].lower():
         payload["temperature"] = 0.3
 
+    usage = None
     for attempt in (1, 2):
         data = await _request_model(cfg, payload)
         try:
             content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError):
             raise RuntimeError("unexpected model response format")
+        usage = merge_usage(usage, build_usage(cfg, data.get("usage"),
+                                              content if isinstance(content, str) else "", prompt))
+        if on_usage:
+            await on_usage(usage)
         if isinstance(content, str) and content.strip():
-            return build_usage(cfg, data.get("usage") or {}, content, prompt), content
+            return usage, content
         if attempt == 1:
             continue   # 空输出：重试一次
         reason = (data.get("choices") or [{}])[0].get("finish_reason")
@@ -292,9 +350,10 @@ def _serialize(t: AiTask) -> dict:
 
 async def _push(task_id: int, event: str, data: dict) -> None:
     """向 SSE 事件队列推送（无订阅者时静默丢弃）。"""
-    q = _events.get(task_id)
-    if q is not None:
-        await q.put((event, data))
+    for q in tuple(_events.get(task_id, ())):
+        if q.full():
+            q.get_nowait()
+        q.put_nowait((event, data))
 
 
 async def _progress(task_id: int, progress: float, message: str) -> None:
@@ -303,7 +362,7 @@ async def _progress(task_id: int, progress: float, message: str) -> None:
         return   # 已取消：不再落库/推送 running 事件，避免界面闪回
     async with SessionLocal() as db:
         t = await db.get(AiTask, task_id)
-        if t is not None:
+        if t is not None and t.status not in TERMINAL_STATUSES and task_id not in _cancelled:
             t.status = STATUS_RUNNING
             t.progress = progress
             await db.commit()
@@ -312,9 +371,8 @@ async def _progress(task_id: int, progress: float, message: str) -> None:
     })
 
 
-async def _run_task(task_id: int) -> None:
+async def _run_task(task_id: int, cfg: dict | None = None) -> None:
     """后台执行命题任务：调用模型 → 校验 → 落库。所有异常在此兜底。"""
-    cfg = None
     try:
         async with SessionLocal() as db:
             t = await db.get(AiTask, task_id)
@@ -323,7 +381,7 @@ async def _run_task(task_id: int) -> None:
             requirement, problem_id = t.requirement, t.problem_id
         await _progress(task_id, 0.05, "任务开始")
 
-        cfg = await config_store.load()
+        cfg = cfg or await config_store.load()
         if cfg is None:
             raise RuntimeError("model config not set")
 
@@ -343,7 +401,14 @@ async def _run_task(task_id: int) -> None:
 
         ticker = asyncio.create_task(_ticker())
         try:
-            usage, content = await _call_model(cfg, prompt)
+            async def record_usage(usage):
+                async with SessionLocal() as db:
+                    await db.execute(update(AiTask).where(AiTask.id == task_id)
+                                     .values(usage=usage))
+                    await db.commit()
+                await _push(task_id, "usage", usage)
+            usage, content = await asyncio.wait_for(
+                _call_model(cfg, prompt, record_usage), timeout=REQUEST_TIMEOUT)
         finally:
             ticker.cancel()
             try:
@@ -352,17 +417,18 @@ async def _run_task(task_id: int) -> None:
                 pass
 
         await _progress(task_id, 0.7, "模型已返回，正在解析校验…")
-        problem = parse_problem(content)
+        problem = parse_problem(content.replace(cfg["api_key"], "***"))
+        if problem_id:
+            problem["id"] = problem_id
 
         await _progress(task_id, 0.9, "校验通过，正在保存结果…")
         if task_id in _cancelled:
             return
         async with SessionLocal() as db:
             t = await db.get(AiTask, task_id)
-            t.status = STATUS_DONE
-            t.progress = 1.0
-            t.result = problem
-            t.usage = usage
+            if t is None or t.status in TERMINAL_STATUSES or task_id in _cancelled:
+                return
+            t.status, t.progress, t.result, t.usage = STATUS_DONE, 1.0, problem, usage
             await db.commit()
         await _push(task_id, "final", {
             "task_id": task_id, "status": STATUS_DONE, "progress": 1.0,
@@ -373,12 +439,12 @@ async def _run_task(task_id: int) -> None:
         raise
     except Exception as e:
         secret = cfg.get("api_key") if cfg else None
-        msg = _sanitize(str(e), secret)
+        msg = _sanitize(str(e), secret) or "model request timed out"
         if task_id not in _cancelled:
             try:
                 async with SessionLocal() as db:
                     t = await db.get(AiTask, task_id)
-                    if t is not None:
+                    if t is not None and t.status not in TERMINAL_STATUSES and task_id not in _cancelled:
                         t.status = STATUS_FAILED
                         t.result = {"error": msg}
                         await db.commit()
@@ -389,7 +455,7 @@ async def _run_task(task_id: int) -> None:
         })
     finally:
         _tasks.pop(task_id, None)
-        _events.pop(task_id, None)   # 释放事件队列（订阅者持有的引用不受影响）
+        # 每个 SSE 订阅者负责释放自己的队列；取消接口仍需向队列广播终态。
 
 
 async def create_task(user: User, body: AiTaskIn) -> AiTask:
@@ -415,7 +481,8 @@ async def create_task(user: User, body: AiTaskIn) -> AiTask:
         await db.refresh(t)
         task_id = t.id
     _cancelled.discard(task_id)
-    _tasks[task_id] = asyncio.create_task(_run_task(task_id))
+    # 固定本次调用的 URL、模型、密钥和价格，配置变更只作用于后续任务。
+    _tasks[task_id] = asyncio.create_task(_run_task(task_id, cfg))
     return t
 
 
@@ -458,12 +525,17 @@ async def cancel_task(user: User, task_id: int) -> str:
             raise ApiError(403, "permission denied")
         if t.status in TERMINAL_STATUSES:
             raise ApiError(409, "task already finished")
-        t.status = STATUS_CANCELLED
-        await db.commit()
     _cancelled.add(task_id)
     task = _tasks.get(task_id)
     if task is not None:
         task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    async with SessionLocal() as db:
+        t = await db.get(AiTask, task_id)
+        if t.status in TERMINAL_STATUSES:
+            raise ApiError(409, "task already finished")
+        t.status = STATUS_CANCELLED
+        await db.commit()
     # 立即向所有观察者推送终态（advance.md R3：界面明确展示任务已中断的状态；
     # _run_task 被 cancel 后不再推送，避免与这里的 final 重复）
     await _push(task_id, "final", {
@@ -481,8 +553,15 @@ async def sse_stream(state: dict, task_id: int):
 
     先发当前状态，再推送 progress/final 事件；15s 心跳保活。
     """
-    q = _events.setdefault(task_id, asyncio.Queue())
+    q = asyncio.Queue(maxsize=64)
+    queues = _events.setdefault(task_id, set())
+    queues.add(q)
     try:
+        # 状态查询与订阅之间任务可能已经结束，必须重新读取一次以免漏掉终态。
+        async with SessionLocal() as db:
+            task = await db.get(AiTask, task_id)
+            if task is not None:
+                state = _serialize(task)
         yield _sse("state", state)
         if state["status"] in TERMINAL_STATUSES:
             return
@@ -498,6 +577,21 @@ async def sse_stream(state: dict, task_id: int):
         yield _sse("final", {
             "task_id": task_id, "status": STATUS_FAILED, "message": _sanitize(str(e), None),
         })
+    finally:
+        queues.discard(q)
+        if not queues and _events.get(task_id) is queues:
+            _events.pop(task_id, None)
+
+
+async def shutdown() -> None:
+    tasks = list(_tasks.values())
+    _cancelled.update(_tasks)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    _tasks.clear()
+    _events.clear()
+    _cancelled.clear()
 
 
 async def fail_stale_tasks() -> None:

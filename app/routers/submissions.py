@@ -10,8 +10,10 @@
 """
 import json
 
+from app.core.routing import AuthenticatedRoute
+
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import config
@@ -24,7 +26,7 @@ from app.schemas.submission import SubmissionIn
 from app.services import judge_service
 from app.services.problem_store import store
 
-router = APIRouter(prefix="/api/submissions", tags=["submissions"])
+router = APIRouter(route_class=AuthenticatedRoute, prefix="/api/submissions", tags=["submissions"])
 
 # 提交限流（api.md：1 分钟内超过 3 次 → 429；按用户计数）
 submit_limiter = RateLimiter(config.SUBMIT_RATE_LIMIT, config.SUBMIT_RATE_WINDOW)
@@ -73,10 +75,7 @@ async def create_submission(
     submit_limiter.check(str(user.id))   # 超限 → 429
 
     # 题目与语言存在性检查 → 404
-    try:
-        await store.get(body.problem_id)
-    except ApiError as e:
-        raise ApiError(404, "problem not found") from e
+    await store.get(body.problem_id)
     if await db.get(Language, body.language) is None:
         raise ApiError(404, "language not found")
 
@@ -102,14 +101,15 @@ async def list_submissions(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    # 权限：普通用户只能查自己的记录
+    if user.role != "admin" and user_id is not None and user_id != user.id:
+        raise ApiError(403, "permission denied")
     if page is not None and page_size is None:
         raise ApiError(400, "page_size is required when page is provided")
-
-    # api.md：user_id/problem_id 为一级条件，不可以全部为空
     if user_id is None and problem_id is None:
         raise ApiError(400, "at least one of user_id or problem_id is required")
-
-    # 权限：普通用户只能查自己的记录
+    if status is not None and status not in ("pending", "success", "error"):
+        raise ApiError(400, "invalid status")
     if user.role != "admin":
         if user_id is not None and user_id != user.id:
             raise ApiError(403, "permission denied")
@@ -171,13 +171,15 @@ async def rejudge_submission(
         raise ApiError(404, "submission not found")
 
     # 覆盖原记录：取消旧任务 → 重置为 pending → 重新评测
-    judge_service.cancel_judge(sub.id)
+    await judge_service.cancel_judge(sub.id)
     sub.status = "pending"
     sub.score = None
+    sub.total_score = None
     sub.counts = None
     sub.compile_info = None
     sub.run_info = None
     sub.error_info = None
+    await db.execute(delete(TestcaseResult).where(TestcaseResult.submission_id == sub.id))
     await db.commit()
 
     judge_service.schedule_judge(sub.id)
@@ -201,8 +203,14 @@ async def get_submission_log(
     if sub is None:
         raise ApiError(404, "submission not found")   # api.md：评测不存在不记录审计
 
-    problem = await store.get(sub.problem_id)
-    public = bool(problem.get("public_cases"))
+    try:
+        problem = await store.get(sub.problem_id)
+        public = bool(problem.get("public_cases"))
+    except ApiError as exc:
+        if exc.status != 404:
+            raise
+        # 删除题目不会删除历史提交；缺少公开策略时默认关闭公开。
+        public = False
 
     # 可见性：管理员 / 题目公开（所有登录用户）/ 本人
     if user.role != "admin" and not public and sub.user_id != user.id:
@@ -219,7 +227,8 @@ async def get_submission_log(
             .order_by(TestcaseResult.id)
         )).all()
         data["details"] = [
-            {"id": r.case_id, "result": r.result, "time": r.time, "memory": r.memory}
+            {"id": int(r.case_id) if r.case_id.isdigit() else r.case_id,
+             "result": r.result, "time": r.time, "memory": r.memory}
             for r in rows
         ]
 

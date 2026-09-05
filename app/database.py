@@ -23,6 +23,7 @@ async def init_db() -> None:
     """建表（create_all 幂等，可重复调用）。"""
     from app import models  # noqa: F401  确保所有模型已注册到 Base.metadata
 
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

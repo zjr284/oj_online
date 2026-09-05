@@ -83,25 +83,25 @@ async def test_submit_judge_and_list(client):
     assert data["verdicts"] == {"AC": 4}  # extra：各结果统计
     assert data["compile_info"] is None   # 解释型语言无编译信息
 
-    # WA 提交 → error
+    # WA 提交 → success（完成判题，得分为 0）
     sid2 = await _submit(client, WA_CODE)
     data = await wait_status(client, sid2)
-    assert data["status"] == "error"
+    assert data["status"] == "success"
     assert data["score"] == 0
     assert data["counts"] == 40
     assert data["verdicts"] == {"WA": 4}
     assert data["run_info"]["result"] == "finished"
 
-    # 列表：按题目筛选；error 记录只返回 id 和 status（api.md）
+    # 列表：正常完成的 WA 提交也应显示得分
     resp = await client.get("/api/submissions/", params={"problem_id": "sum_2"})
     data = resp.json()["data"]
     assert data["total"] == 2
     err_item = next(s for s in data["submissions"] if s["submission_id"] == str(sid2))
-    assert set(err_item.keys()) == {"submission_id", "status"}
+    assert err_item["status"] == "success" and err_item["score"] == 0
 
     # 状态筛选
     resp = await client.get("/api/submissions/", params={"problem_id": "sum_2", "status": "success"})
-    assert resp.json()["data"]["total"] == 1
+    assert resp.json()["data"]["total"] == 2
 
     # 分页语义：page 非空 page_size 空 → 400；page 空 page_size 非空 → 第一页
     resp = await client.get("/api/submissions/", params={"problem_id": "sum_2", "page": 1})
@@ -124,14 +124,14 @@ async def test_tle_and_mle(client):
     # TLE：死循环，CPU 限制 1 秒
     sid = await _submit(client, TLE_CODE)
     data = await wait_status(client, sid, timeout=20)
-    assert data["status"] == "error"
+    assert data["status"] == "success"
     assert data["counts"] == 40
     assert data["verdicts"] == {"TLE": 4}
 
     # MLE：无限分配内存，限制 64MB
     sid = await _submit(client, MLE_CODE)
     data = await wait_status(client, sid, timeout=20)
-    assert data["status"] == "error"
+    assert data["status"] == "success"
     assert data["counts"] == 40
     assert data["verdicts"] == {"MLE": 4}
 
@@ -169,6 +169,8 @@ async def test_cpp_compile_and_ac(client):
     assert data["counts"] == 40
     assert data["verdicts"] == {"AC": 4}
 
+
+    assert data["compile_info"] == {"result": "success", "message": ""}
 
 async def test_permissions_and_rejudge(client):
     await _setup(client)
@@ -280,7 +282,7 @@ async def test_mixed_verdicts_score(client):
     await _setup(client)
     code = "a, b = map(int, input().split())\nprint(a + b if a == 1 else 999)\n"
     data = await wait_status(client, await _submit(client, code))
-    assert data["status"] == "error"
+    assert data["status"] == "success"
     assert data["verdicts"] == {"AC": 1, "WA": 3}
     assert data["score"] == 10
     assert data["counts"] == 40           # 总分数不因 WA 改变
@@ -291,7 +293,7 @@ async def test_wall_clock_tle(client):
     await _setup(client)
     code = "import time\ntime.sleep(5)\nprint(3)\n"
     data = await wait_status(client, await _submit(client, code), timeout=30)
-    assert data["status"] == "error"
+    assert data["status"] == "success"
     assert data["verdicts"] == {"TLE": 4}
     assert data["counts"] == 40
 
@@ -301,7 +303,7 @@ async def test_runtime_error_re(client):
     await _setup(client)
     code = "raise RuntimeError('boom')\n"
     data = await wait_status(client, await _submit(client, code))
-    assert data["status"] == "error"
+    assert data["status"] == "success"
     assert data["verdicts"] == {"RE": 4}
     assert data["score"] == 0
     assert data["run_info"]["result"] == "finished"
@@ -343,8 +345,8 @@ async def test_dynamic_language_registration_affects_judge(client):
     assert data["score"] == 40
 
 
-async def test_language_limits_override_problem(client):
-    """语言注册的 time_limit 优先于题目配置（Step 2：题目未设置时按语言配置）。"""
+async def test_problem_limits_override_language(client):
+    """Step 2：题目显式设置限制优先，未设置时才回退到语言配置。"""
     await login(client, "admin", "admintestpassword")
     await client.post("/api/problems/", json={
         **{k: v for k, v in PROBLEM.items() if k not in ("id", "testcases")},
@@ -357,12 +359,12 @@ async def test_language_limits_override_problem(client):
         "time_limit": 1, "memory_limit": 64,
     })
 
-    # 题目限制 5s 下 sleep(3) 本可通过；语言限制 1s → TLE
+    # 题目显式限制 5s，优先于语言限制 1s → AC
     code = "import time\ntime.sleep(3)\nprint(3)\n"
     data = await wait_status(client, await _submit(client, code, problem_id="slow", language="turtle"),
                              timeout=30)
-    assert data["status"] == "error"
-    assert data["verdicts"] == {"TLE": 1}
+    assert data["status"] == "success"
+    assert data["verdicts"] == {"AC": 1}
 
     # 用默认语言（无语言限制）提交同样代码：走题目 5s 限制 → AC
     data = await wait_status(client, await _submit(client, code, problem_id="slow", language="python"),
@@ -466,18 +468,17 @@ async def test_list_filters_and_order(client):
     resp = await client.get("/api/submissions/",
                             params={"problem_id": "sum_2", "status": "success"})
     data = resp.json()["data"]
-    assert data["total"] == 1
-    assert data["submissions"][0]["submission_id"] == str(sid_ok)
+    assert data["total"] == 2
+    assert data["submissions"][0]["submission_id"] == str(sid_bad)
 
     # 不存在的题目 → 空列表（筛选语义，不报 404）
     resp = await client.get("/api/submissions/", params={"problem_id": "nope"})
     assert resp.json()["data"] == {"total": 0, "submissions": []}
 
-    # 未知 status 值 → 空列表
+    # 未知 status 值 → 参数错误
     resp = await client.get("/api/submissions/",
                             params={"problem_id": "sum_2", "status": "bogus"})
-    assert resp.status_code == 200
-    assert resp.json()["data"]["total"] == 0
+    assert resp.status_code == 400
 
     # 按 id 倒序：新提交在前
     resp = await client.get("/api/submissions/", params={"problem_id": "sum_2"})
@@ -490,7 +491,9 @@ async def test_list_item_shapes(client):
     await _setup(client)
     sid_ok = await _submit(client, AC_CODE)
     await wait_status(client, sid_ok)
-    sid_bad = await _submit(client, WA_CODE)
+    await client.post("/api/languages/", json={
+        "name": "missing", "file_ext": ".py", "run_cmd": "no-such-binary-xyz {src}"})
+    sid_bad = await _submit(client, WA_CODE, language="missing")
     await wait_status(client, sid_bad)
 
     # 直接插入 pending 记录（不调度评测），确定性地观察 pending 条目形状

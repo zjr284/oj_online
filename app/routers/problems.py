@@ -16,11 +16,12 @@ from fastapi import APIRouter, Body, Depends, Path
 
 from app.core.deps import get_current_user, require_admin
 from app.core.errors import ApiError, ok
+from app.core.routing import AuthenticatedRoute
 from app.models import User
 from app.schemas.problem import PROBLEM_ID_RE, LogVisibilityIn, ProblemConfig
 from app.services.problem_store import store
 
-router = APIRouter(prefix="/api/problems", tags=["problems"])
+router = APIRouter(prefix="/api/problems", tags=["problems"], route_class=AuthenticatedRoute)
 
 
 def valid_problem_id(problem_id: str = Path(...)) -> str:
@@ -39,6 +40,8 @@ async def list_problems(user: User = Depends(get_current_user)):
 @router.post("")
 @router.post("/")
 async def create_problem(cfg: ProblemConfig, user: User = Depends(get_current_user)):
+    if cfg.public_cases and user.role != "admin":
+        raise ApiError(403, "admin permission required to change log visibility")
     await store.create(cfg)
     return ok({"id": cfg.id}, msg="add success")
 
@@ -55,7 +58,7 @@ async def update_problem(cfg: ProblemConfig,
                          user: User = Depends(get_current_user)):
     if cfg.id != problem_id:
         raise ApiError(400, "body id must match path id")
-    await store.update(cfg)
+    await store.update(cfg, allow_visibility=user.role == "admin")
     return ok({"id": problem_id}, msg="update success")
 
 

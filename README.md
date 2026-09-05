@@ -1,7 +1,7 @@
 # Online Judge（实验二：在线评测系统）
 
-基于 FastAPI 异步接口的在线评测系统。**Step 1–6 与 Advance AI 智能命题已全部实现**：
-题目管理、评测引擎（沙箱判题）、评测管理（提交/重判/限流）、
+基于 FastAPI 异步接口的在线评测系统。**覆盖 Step 1–6 与 Advance AI 智能命题**：
+题目管理、评测引擎（资源限制与进程清理）、评测管理（提交/重判/限流）、
 用户与权限管理、评测日志（明细可见性 + 访问审计）、
 AI 命题（可配置模型/实时进度/中断/用量计费）与配套前端页面。
 
@@ -15,6 +15,8 @@ python3 -m venv .venv
 
 打开 http://127.0.0.1:8501 （Streamlit 前端），初始管理员：`admin` / `admintestpassword`。
 后端为纯 API 服务（http://127.0.0.1:8000 ）。
+
+逐项核对与修复记录见 [EXPERIMENT2_AUDIT.md](EXPERIMENT2_AUDIT.md)，实验报告初稿见 [REPORT.md](REPORT.md)。
 
 运行测试：
 
@@ -31,7 +33,7 @@ python3 -m venv .venv
 | 题目存储 | JSON 文件（`data/problems/`，每题一个） | Step 1 实验要求；`ProblemStore` 抽象后可换数据库 |
 | 认证 | Cookie Session + bcrypt（兼容旧 PBKDF2 哈希） | 与 login/logout API 天然对应 |
 | 前端 | Streamlit（app.py，step6.md 要求） | 与 API 解耦（Cookie 经 httpx 传递）；离线验收环境可直接运行 |
-| 判题沙箱 | subprocess + `resource.setrlimit`（CPU/内存/进程数）+ psutil 内存监控 + 墙钟兜底 | 见 `app/judge/runner.py` 设计说明 |
+| 判题执行 | subprocess + CPU/文件大小/进程数限制 + psutil 内存监控 + 墙钟超时 | 超时和取消时清理进程组；这是本机资源控制，不提供容器级文件和网络隔离 |
 
 ## 目录结构
 
@@ -46,6 +48,7 @@ app/
 ├── core/                # 核心设施
 │   ├── errors.py        #   统一异常：所有错误返回 {code, msg, data}
 │   ├── deps.py          #   认证依赖：get_current_user / require_admin
+│   ├── routing.py       #   在 JSON 解析前完成身份和管理员权限检查
 │   ├── security.py      #   密码哈希（bcrypt + 旧格式兼容）
 │   └── rate_limit.py    #   提交限流（429）
 ├── services/            # 业务逻辑层
@@ -64,11 +67,11 @@ app/
 │   ├── maintenance.py   #   测试辅助 /api/reset/ ✅
 │   └── ai.py            #   Advance AI 命题：配置/任务/SSE 进度/取消 ✅
 └── judge/
-    └── runner.py        # 判题引擎：沙箱执行/资源限制/输出比对（Step 2） ✅
+    └── runner.py        # 判题引擎：进程执行/资源限制/输出比对（Step 2） ✅
 
 data/problems/           # 题目配置文件（sum_2 / P1001 示例）
 app.py                   # Streamlit 前端（题目/评测/用户管理/访问审计/AI 命题页面）
-tests/                   # pytest 接口测试（202 个，含真实判题端到端、AI 全流程与 Streamlit 冒烟）
+tests/                   # pytest 测试（含真实 Python/C++ 判题、AI 模拟接口、Streamlit 交互与文档符合性回归）
 ```
 
 ## 分层约定（扩展方式）
@@ -87,11 +90,19 @@ models   →  数据结构（ORM / 文件）
 提交后立即返回 `pending`，后台 `asyncio.create_task` 执行评测：
 
 1. 编译（有 `compile_cmd` 的语言）失败 → `CE`；
-2. 逐测试点执行：`RLIMIT_CPU`（超时→TLE）+ 内存监控（超限→MLE）+ 非零退出→RE，
+2. 逐测试点执行：题目显式限制 → 语言限制 → 系统默认（3 秒 / 128 MB）；
+   `RLIMIT_CPU` 与墙钟超时（超时→TLE）+ 内存监控（超限→MLE）+ 非零退出→RE，
    输出逐行比对（忽略行尾空白与末尾空行）→ AC/WA；
 3. 每个测试点 10 分，`score = AC 数 × 10`。
 
-重判通过**代际机制**防止旧评测任务覆盖新结果；服务重启时自动重判遗留 pending 提交。
+`success` 表示评测正常完成，包括得到 WA/TLE/MLE/RE 的提交；`error` 用于编译失败或评测系统错误。
+每题全部测试点 AC 才计入用户 `resolve_count`。C++ 编译成功和失败均返回结构化 `compile_info`。
+
+重判先终止旧进程并清空旧分数和明细，再调度新任务；服务重启会修正旧版状态标记并重判遗留 pending 提交。
+重置接口会停止后台评测和 AI 任务，清除会话、题目、记录、限流与 AI 配置，再恢复初始管理员和默认语言。
+
+前端使用 `st.fragment` 每 1.5 秒查询状态，不整页刷新。会话 Cookie 仅在当前 Streamlit 会话内传递；
+整页刷新后需重新登录。旧版 URL 中的 `oj_s` / `oj_u` 凭据会被移除。
 
 ## 关键约定（来自实验要求）
 
@@ -122,7 +133,7 @@ models   →  数据结构（ORM / 文件）
 - **R2 可配置**：provider_url/model/api_key 均通过接口配置（OpenAI 兼容 chat/completions 协议，
   不写死厂商）；api_key 用 Fernet 加密存 `data/ai_config.json`（密钥文件 600 权限），
   任何接口/日志/错误信息都不泄露密钥；
-- **R3 进度与中断**：SSE 推送 progress/final 事件（含心跳），断线自动退回 1.5s 轮询；
+- **R3 进度与中断**：后端 SSE 按订阅者广播 state/progress/usage/final 事件（含心跳）；前端使用 1.5s 片段轮询；
   模型调用期间每 2s 推送一次进度（progress 缓慢爬升 + "模型推理中（已 Xs）"），
   执行期间界面持续展示可观察的进度信息，而非等任务完成才返回结果；
   cancel 用 `task.cancel()` 真正终止后台任务，取消后不会被旧任务覆盖状态，
@@ -132,6 +143,27 @@ models   →  数据结构（ORM / 文件）
   ② 模型配置中用户填写的输入/输出价格（前端提示：不同模型、不同时段的计费价格可能不同，
   部分厂商设有错峰优惠时段，请按实际调用时段的官方价格填写）
   ③ 未填价格且接口未返回费用时 `cost=null` 并在页面标注（`price_source: unknown`）；
-  模型接口不返回用量时按字符数/4 估算，`usage.estimated=true` 并在页面标注；
+  模型接口不返回完整用量时，对缺失项按字符数/4 估算（包含系统提示词），`usage.estimated=true` 并在页面标注；
 - **校验入库**：模型输出必须通过 `ProblemConfig` 校验（非法 JSON/缺字段 → 任务 failed，
   错误信息脱敏）；服务重启时遗留 pending/running 任务自动标记 failed。
+
+- AI 模型 URL 可填写完整 chat/completions 地址，或域名 / `/v1` 基地址（自动补全端点）；不接受把密钥放进 URL。
+- 模型配置增加 `currency`（默认 CNY，可选 USD）；每个任务固定创建时的 URL、模型、密钥和价格。
+- 重试累计每次调用的 Token 与费用，`usage.calls` 保留明细；模型返回后即保存用量，题目校验失败也不会丢失账单信息。
+- 返回前被中断或网络失败的调用可能没有完整用量，页面显示未知，不把未知当作零费用。
+- 生成题目提供 JSON 审阅编辑及实际测试点输入输出预览；改编任务保持原题 id，日志公开策略由管理员维护。
+- 自动测试不调用付费模型。真实题目的合理性与测试规模区分能力仍需按验收需求用实际模型检查。
+
+## 题库数据验证
+
+`tests/test_demo_problems.py` 独立检查示例题目的输入范围及标准输出，
+并验证 n=200000、q=50000 时 Python/C++14 二分解法通过、Python 线性扫描超时。
+
+生成可导入的性能测试配置（输出到 Git 忽略目录，不覆盖现有题目）：
+
+```bash
+.venv/bin/python scripts/build_find_range_stress.py
+# 最大规模：增加 --n 1000000 --q 100000
+```
+
+验证记录：完整回归 245 项通过，新增题库验证 6 项通过，合计 251 项。

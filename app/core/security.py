@@ -9,15 +9,25 @@ import secrets
 
 import bcrypt
 
-# bcrypt 输入上限 72 字节，超长密码截断（不影响本课程场景）
+# bcrypt 输入上限 72 字节；新超长密码先 SHA-256，再 bcrypt，避免截断碰撞。
 _BCRYPT_MAX_BYTES = 72
 
 
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode()[:_BCRYPT_MAX_BYTES], bcrypt.gensalt()).decode()
+    encoded = password.encode()
+    if len(encoded) > _BCRYPT_MAX_BYTES:
+        digest = hashlib.sha256(encoded).hexdigest().encode()
+        return "bcrypt_sha256$" + bcrypt.hashpw(digest, bcrypt.gensalt()).decode()
+    return bcrypt.hashpw(encoded, bcrypt.gensalt()).decode()
 
 
 def verify_password(password: str, stored: str) -> bool:
+    if stored.startswith("bcrypt_sha256$"):
+        digest = hashlib.sha256(password.encode()).hexdigest().encode()
+        try:
+            return bcrypt.checkpw(digest, stored.split("$", 1)[1].encode())
+        except ValueError:
+            return False
     if stored.startswith("$2"):   # bcrypt 格式
         try:
             return bcrypt.checkpw(password.encode()[:_BCRYPT_MAX_BYTES], stored.encode())

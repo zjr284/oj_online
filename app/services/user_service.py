@@ -1,4 +1,6 @@
 """用户服务：注册、初始管理员、用户统计等业务逻辑（Step 4）。"""
+import asyncio
+
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +19,7 @@ async def ensure_admin() -> None:
             db.add(
                 User(
                     username=config.ADMIN_USERNAME,
-                    password_hash=hash_password(config.ADMIN_PASSWORD),
+                    password_hash=await asyncio.to_thread(hash_password, config.ADMIN_PASSWORD),
                     role="admin",
                 )
             )
@@ -36,7 +38,7 @@ async def create_user(db: AsyncSession, username: str, password: str, role: str 
     validate_credentials(username, password)
     if await db.scalar(select(User).where(User.username == username)) is not None:
         raise ApiError(400, "username already exists")
-    user = User(username=username, password_hash=hash_password(password), role=role)
+    user = User(username=username, password_hash=await asyncio.to_thread(hash_password, password), role=role)
     db.add(user)
     try:
         await db.commit()
@@ -51,7 +53,7 @@ async def create_user(db: AsyncSession, username: str, password: str, role: str 
 async def user_stats(db: AsyncSession, user_id: int) -> tuple[int, int]:
     """返回 (submit_count, resolve_count)。
 
-    submit_count 按提交次数计；resolve_count 按通过（success）的题目数计（api.md）。
+    submit_count 按提交次数计；resolve_count 按满分通过的不同题目数计。
     """
     submit_count = (
         await db.scalar(select(func.count()).select_from(Submission).where(Submission.user_id == user_id))
@@ -61,7 +63,8 @@ async def user_stats(db: AsyncSession, user_id: int) -> tuple[int, int]:
         await db.scalar(
             select(func.count(func.distinct(Submission.problem_id)))
             .select_from(Submission)
-            .where(Submission.user_id == user_id, Submission.status == "success")
+            .where(Submission.user_id == user_id, Submission.status == "success",
+                   Submission.total_score > 0, Submission.score == Submission.total_score)
         )
         or 0
     )
