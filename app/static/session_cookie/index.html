@@ -3,7 +3,10 @@
 <head><meta charset="utf-8"><title>session cookie</title></head>
 <body style="margin:0;height:0;overflow:hidden">
 <script>
-const COOKIE_NAME = "oj_session";
+// 与后端的 HttpOnly oj_session 分开，避免同名 Cookie 无法被 JS
+// 回读时误判为浏览器拒绝保存。
+const COOKIE_NAME = "oj_browser_session";
+const LEGACY_COOKIE_NAME = "oj_session";
 
 function notifyReady() {
   window.parent.postMessage({
@@ -21,14 +24,48 @@ function setHeight() {
   }, "*");
 }
 
+function cookieValue(cookieDocument, name) {
+  const prefix = `${name}=`;
+  const item = cookieDocument.cookie.split("; ").find(row => row.startsWith(prefix));
+  return item ? item.slice(prefix.length) : null;
+}
+
+function notifyCookieChanged(present, marker) {
+  // Cookie 首次写入后让 Streamlit 再跑一次，确保用户来得及点击导航
+  // 或刷新之前，持久化已经完成。通知中不包含会话令牌。
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type: "streamlit:setComponentValue",
+    dataType: "json",
+    value: {present, marker}
+  }, "*");
+}
+
 window.addEventListener("message", (event) => {
   if (!event.data || event.data.type !== "streamlit:render") return;
   const args = event.data.args || {};
   const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  let cookieDocument = document;
+  try {
+    // 组件与 Streamlit 同源时直接写父页文档，确保 /ai 等原生页面刷新时可读。
+    cookieDocument = window.parent.document;
+  } catch (_) {}
+  const current = cookieValue(cookieDocument, COOKIE_NAME);
+  const legacyCurrent = cookieValue(cookieDocument, LEGACY_COOKIE_NAME);
   if (args.token) {
-    document.cookie = `${COOKIE_NAME}=${encodeURIComponent(args.token)}; Path=/; Max-Age=${Number(args.max_age) || 0}; SameSite=Strict${secure}`;
-  } else {
-    document.cookie = `${COOKIE_NAME}=; Path=/; Max-Age=0; SameSite=Strict${secure}`;
+    const encoded = encodeURIComponent(args.token);
+    if (current !== encoded) {
+      cookieDocument.cookie = `${COOKIE_NAME}=${encoded}; Path=/; Max-Age=${Number(args.max_age) || 0}; SameSite=Lax${secure}`;
+      notifyCookieChanged(cookieValue(cookieDocument, COOKIE_NAME) === encoded, args.marker || "");
+    }
+  } else if (args.clear && (current !== null || legacyCurrent !== null)) {
+    if (current !== null) {
+      cookieDocument.cookie = `${COOKIE_NAME}=; Path=/; Max-Age=0; SameSite=Lax${secure}`;
+    }
+    if (legacyCurrent !== null) {
+      cookieDocument.cookie = `${LEGACY_COOKIE_NAME}=; Path=/; Max-Age=0; SameSite=Lax${secure}`;
+    }
+    notifyCookieChanged(false, "");
   }
   setHeight();
 });

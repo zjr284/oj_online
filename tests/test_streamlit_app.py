@@ -65,7 +65,7 @@ def test_audit_page_admin_only_and_renders(monkeypatch):
              + " ".join(str(e.value) for e in at.error))
     assert "访问审计" in texts
     labels = [ti.label for ti in at.text_input]
-    assert any("用户 ID" in l for l in labels)
+    assert any("用户名" in l for l in labels)
     assert any("题目 ID" in l for l in labels)
 
 
@@ -174,12 +174,32 @@ def _fake_api(monkeypatch, state):
         elif path == '/api/ai/problem-tasks/7/cancel':
             state['status'] = 'cancelled'
             data = {'task_id': 7, 'status': 'cancelled'}
+        elif path == '/api/ai/problem-tasks/7/retry' and method == 'POST':
+            state['retried'] = True
+            data = {'task_id': 8, 'status': 'pending', 'retried_from': 7}
+        elif path == '/api/ai/problem-tasks/8':
+            data = {'task_id': 8, 'status': 'pending', 'progress': 0,
+                    'requirement': '测试命题', 'model': 'example', 'result': None,
+                    'usage': None}
         elif path == '/api/ai/problem-tasks/7':
             from test_ai import GENERATED
             data = {'task_id': 7, 'status': state.get('status', 'running'), 'progress': 0.4,
                     'requirement': '测试命题', 'model': 'example', 'result': GENERATED,
                     'usage': {'input_tokens': 100, 'output_tokens': 20, 'total_tokens': 120,
                               'cost': 0.1, 'currency': 'CNY', 'price_source': 'provider'}}
+        elif path == '/api/logs/access/':
+            rows = state.get('audit_logs', [])
+            params = kwargs.get('params') or {}
+            page = int(params.get('page', 1))
+            page_size = int(params.get('page_size', len(rows) or 1))
+            start = (page - 1) * page_size
+            data = rows[start:start + page_size]
+        elif path.startswith('/api/logs/access/') and method == 'DELETE':
+            log_id = path.rsplit('/', 1)[-1]
+            state['audit_logs'] = [
+                row for row in state.get('audit_logs', []) if str(row['log_id']) != log_id
+            ]
+            data = {'log_id': log_id}
         elif path.endswith('/log'):
             data = {'score': 10, 'counts': 40}
         elif path == '/api/submissions/1':
@@ -232,6 +252,62 @@ def test_successful_login_does_not_put_credentials_in_url(monkeypatch):
     assert at.session_state['me']['username'] == 'alice'
     assert at.session_state['cookies']['oj_session'] == 'private-session-token'
     assert 'oj_s' not in at.query_params and 'oj_u' not in at.query_params
+
+
+def test_audit_rows_show_details_and_delete_independently(monkeypatch):
+    state = {'audit_logs': [{
+        'log_id': '41', 'username': 'alice', 'user_id': '99', 'problem_id': '1001',
+        'action': 'view_logs', 'status': '200', 'time': '2026-09-06 10:00:00',
+    }, {
+        'log_id': '42', 'username': 'bob', 'user_id': '100', 'problem_id': '1002',
+        'action': 'view_logs', 'status': '403', 'time': '2026-09-06 10:01:00',
+    }]}
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'root', 'user_id': '1', 'role': 'admin'}
+    at.run()
+    _open_page(at, 'audit')
+
+    assert {'alice', 'bob'} <= {str(item.value) for item in at.text}
+    assert [button.label for button in at.button].count('查看详情') == 2
+    assert [button.label for button in at.button].count('删除') == 2
+
+    # 每条日志末尾的详情按钮只展示对应记录，不发生删除。
+    next(button for button in at.button if button.label == '查看详情').click().run()
+    detail_text = {str(item.value) for item in at.text}
+    assert {'41', 'alice', '1001', '查看评测日志'} <= detail_text
+    assert not any(method == 'DELETE' for method, _path, _body in state['requests'])
+
+    # 点击第二条记录的删除按钮，经二次确认后只删第二条。
+    _open_page(at, 'audit')  # 关闭上方详情弹窗
+    delete_buttons = [button for button in at.button if button.label == '删除']
+    delete_buttons[1].click().run()
+    next(button for button in at.button if button.label == '确认删除').click().run()
+
+    assert not at.exception
+    assert [row['log_id'] for row in state['audit_logs']] == ['41']
+    assert any(method == 'DELETE' and path == '/api/logs/access/42'
+               for method, path, _body in state['requests'])
+
+
+def test_audit_pagination_does_not_skip_the_twenty_first_log(monkeypatch):
+    state = {'audit_logs': [
+        {'log_id': str(index), 'username': f'user{index}', 'user_id': str(index),
+         'problem_id': '1001', 'action': 'view_logs', 'status': '200',
+         'time': '2026-09-06 10:00:00'}
+        for index in range(1, 22)
+    ]}
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'root', 'user_id': '1', 'role': 'admin'}
+    at.run()
+    _open_page(at, 'audit')
+    first_page = {str(item.value) for item in at.text}
+    assert 'user20' in first_page and 'user21' not in first_page
+
+    next(button for button in at.button if button.label == '下一页').click().run()
+    second_page = {str(item.value) for item in at.text}
+    assert 'user21' in second_page and 'user20' not in second_page
 
 
 def test_problem_title_is_the_detail_link(monkeypatch):
@@ -308,6 +384,17 @@ def test_navigation_uses_only_streamlit_router():
     assert 'popstate' not in component and 'location.reload' not in component
 
 
+def test_session_cookie_is_confirmed_before_refresh():
+    """登录后先落盘浏览器 Cookie，再通知 Streamlit 完成一次会话同步。"""
+    component = (Path(APP).parent / 'app' / 'static' / 'session_cookie' / 'index.html').read_text()
+    assert 'window.parent.document' in component
+    assert 'SameSite=Lax' in component
+    assert 'streamlit:setComponentValue' in component
+    assert 'oj_browser_session' in component
+    assert 'cookieValue(cookieDocument, COOKIE_NAME) === encoded' in component
+    assert 'args.clear && (current !== null || legacyCurrent !== null)' in component
+
+
 def test_profile_can_rename_current_user(monkeypatch):
     state = {}
     _fake_api(monkeypatch, state)
@@ -340,6 +427,28 @@ def test_ai_progress_and_cancel_keep_current_page(monkeypatch):
     assert state['status'] == 'cancelled'
     assert at.session_state['ai_task_id'] == 7
     assert any('已中断' in str(info.value) for info in at.info)
+
+
+def test_failed_ai_task_can_restart_as_a_new_task(monkeypatch):
+    state = {'status': 'failed'}
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'root', 'user_id': '1', 'role': 'admin'}
+    at.run()
+    _open_page(at, 'ai_task', task='7')
+
+    restart = next(button for button in at.button if button.label == '🔄 重新开始此任务')
+    restart.click().run()
+
+    assert not at.exception
+    assert state['retried'] is True
+    assert any(method == 'POST' and path == '/api/ai/problem-tasks/7/retry'
+               for method, path, _body in state['requests'])
+    assert at.session_state['ai_task_id'] == 8
+    route_task = at.query_params['task']
+    assert route_task == '8' or route_task == ['8']
+    assert any('已从任务 #7 创建新任务 #8' in str(item.value)
+               for item in at.success)
 
 
 def test_ai_result_can_be_reviewed_before_import(monkeypatch):

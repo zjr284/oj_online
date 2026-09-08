@@ -1,6 +1,7 @@
 """Advance：AI 智能命题接口测试（模型调用经 monkeypatch mock，不依赖外部服务）。"""
 import asyncio
 import json
+import os
 
 import httpx
 
@@ -54,6 +55,16 @@ GENERATED = {
 }
 
 FAKE_USAGE = {"prompt_tokens": 100, "completion_tokens": 200}
+
+
+def test_reasoning_model_timeout_has_safe_default():
+    """推理模型生成完整题目可能超过两分钟，默认总时限不应过短。"""
+    from app import config
+    from app.services import ai_service
+
+    assert ai_service.REQUEST_TIMEOUT == config.AI_REQUEST_TIMEOUT_SECONDS
+    if "OJ_AI_REQUEST_TIMEOUT" not in os.environ:
+        assert ai_service.REQUEST_TIMEOUT == 600
 
 
 def _mock_model(monkeypatch, content=None, usage=None, delay=0.0, exc=None):
@@ -220,6 +231,7 @@ async def test_task_list_and_permissions(client, monkeypatch):
     await login(client, "carol", "pw123456")
     assert (await client.get(f"/api/ai/problem-tasks/{tid}")).status_code == 403
     assert (await client.put(f"/api/ai/problem-tasks/{tid}/cancel")).status_code == 403
+    assert (await client.post(f"/api/ai/problem-tasks/{tid}/retry")).status_code == 403
     assert (await client.get("/api/ai/problem-tasks/")).json()["data"] == []
 
     # 管理员可以查看全部任务。
@@ -230,6 +242,45 @@ async def test_task_list_and_permissions(client, monkeypatch):
     assert "result" not in resp.json()["data"][0]
     # 不存在的任务 → 404
     assert (await client.get("/api/ai/problem-tasks/99999")).status_code == 404
+    assert (await client.post("/api/ai/problem-tasks/99999/retry")).status_code == 404
+    # 只有 failed 任务可重新开始。
+    assert (await client.post(f"/api/ai/problem-tasks/{tid}/retry")).status_code == 409
+
+
+async def test_failed_task_retry_creates_new_task_and_preserves_history(client, monkeypatch):
+    """重新开始创建新记录，保留原错误/用量，并使用最新模型配置。"""
+    await _config(client)
+    await client.post("/api/problems/", json=PROBLEM)
+    _mock_model(monkeypatch, content="not json", usage=FAKE_USAGE)
+    response = await client.post("/api/ai/problem-tasks/", json={
+        "requirement": "改编成进阶题", "problem_id": "1002",
+    })
+    old_id = response.json()["data"]["task_id"]
+    old_before = await _wait_task(client, old_id)
+    assert old_before["status"] == "failed" and old_before["usage"]
+
+    newer = {**CONFIG, "model": "fixed-model", "api_key": "sk-new-secret"}
+    assert (await client.put("/api/ai/model-config", json=newer)).status_code == 200
+    _mock_model(monkeypatch)
+    response = await client.post(f"/api/ai/problem-tasks/{old_id}/retry")
+    assert response.status_code == 200
+    restarted = response.json()["data"]
+    assert restarted["task_id"] != old_id
+    assert restarted == {
+        "task_id": restarted["task_id"], "status": "pending", "retried_from": old_id,
+    }
+
+    new_task = await _wait_task(client, restarted["task_id"])
+    assert new_task["status"] == "done"
+    assert new_task["requirement"] == old_before["requirement"]
+    assert new_task["problem_id"] == old_before["problem_id"] == "1002"
+    assert new_task["model"] == "fixed-model"
+    assert new_task["result"]["id"] == "1002"
+
+    old_after = (await client.get(f"/api/ai/problem-tasks/{old_id}")).json()["data"]
+    assert old_after["status"] == "failed"
+    assert old_after["result"] == old_before["result"]
+    assert old_after["usage"] == old_before["usage"]
 
 
 async def test_cancel_really_terminates(client, monkeypatch):
@@ -299,26 +350,57 @@ async def test_empty_content_retry_and_hint(client, monkeypatch):
 
         monkeypatch.setattr(svc, "_request_model", fake)
         resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "出一道题"})
-        return await _wait_task(client, resp.json()["data"]["task_id"])
+        task = await _wait_task(client, resp.json()["data"]["task_id"])
+        return task, calls["n"]
 
     empty = {"choices": [{"message": {"content": ""}}], "usage": FAKE_USAGE}
     good = {"choices": [{"message": {"content": json.dumps(GENERATED, ensure_ascii=False)}}], "usage": FAKE_USAGE}
     length = {"choices": [{"message": {"content": ""}, "finish_reason": "length"}], "usage": FAKE_USAGE}
 
     # 第一次空、第二次正常 → 重试成功
-    d = await run_once([empty, good])
+    d, calls = await run_once([empty, good])
     assert d["status"] == "done"
+    assert calls == 2
 
     # 两次都空 → failed，提示检查官方模型 ID
-    d = await run_once([empty, empty])
+    d, calls = await run_once([empty, empty])
     assert d["status"] == "failed"
     assert "empty content" in d["result"]["error"]
-    assert "deepseek-chat" in d["result"]["error"]
+    assert "API ID" in d["result"]["error"]
+    assert calls == 2
 
-    # 输出被 max_tokens 截断 → 专门提示
-    d = await run_once([length, length])
+    # 提供商自身的输出或上下文上限：不重复发起必然相同的付费请求
+    d, calls = await run_once([length])
     assert d["status"] == "failed"
-    assert "max_tokens" in d["result"]["error"]
+    assert "OJ 未设置 max_tokens" in d["result"]["error"]
+    assert "模型服务" in d["result"]["error"]
+    assert calls == 1
+
+
+async def test_model_request_has_no_application_output_token_limit(monkeypatch):
+    """OJ 不应给兼容模型请求附加人为的 max_tokens 上限。"""
+    import app.services.ai_service as svc
+
+    captured = {}
+
+    async def fake(_cfg, payload):
+        captured.update(payload)
+        return {
+            "choices": [{"message": {"content": json.dumps(GENERATED, ensure_ascii=False)}}],
+            "usage": FAKE_USAGE,
+        }
+
+    monkeypatch.setattr(svc, "_request_model", fake)
+    await svc._call_model(
+        {
+            "provider_url": "https://api.example.com/v1/chat/completions",
+            "model": "example-model",
+            "api_key": "sk-test",
+        },
+        "出一道题",
+    )
+
+    assert "max_tokens" not in captured
 
 
 async def test_auto_pricing(client, monkeypatch):
@@ -387,6 +469,44 @@ async def test_request_model_404_hint(client, monkeypatch):
         assert "/chat/completions" in str(e)   # 提示用户补全接口路径
     else:
         raise AssertionError("should raise RuntimeError")
+
+
+async def test_model_connection_ignores_stale_proxy_and_returns_actionable_error(monkeypatch):
+    """模型请求默认不继承失效系统代理，连接失败时不再只显示模糊英文。"""
+    import app.services.ai_service as svc
+
+    captured = {}
+
+    class FailingClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def post(self, url, **_kwargs):
+            request = httpx.Request("POST", url)
+            raise httpx.ConnectError("All connection attempts failed", request=request)
+
+    monkeypatch.setattr(svc.config, "AI_TRUST_ENV", False)
+    monkeypatch.setattr(svc.httpx, "AsyncClient", FailingClient)
+    try:
+        await svc._request_model({
+            "provider_url": "https://api.deepseek.com/chat/completions",
+            "api_key": "sk-must-not-leak",
+        }, {"messages": []})
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "api.deepseek.com" in message
+        assert "DNS" in message and "OJ_AI_TRUST_ENV" in message
+        assert "All connection attempts failed" not in message
+        assert "sk-must-not-leak" not in message
+    else:
+        raise AssertionError("connection failure should be translated")
+    assert captured["trust_env"] is False
 
 
 async def test_progress_continuous(client, monkeypatch):

@@ -38,7 +38,7 @@ routers（HTTP 语义）→ services（业务逻辑）→ models / ProblemStore�
 洛谷×力扣主题：.streamlit/config.toml 配色 + app.py `_UI_CSS` 全局样式与 `_badge`/`_html_table` 徽章表格、
 装饰层：stApp 浅蓝渐变底 + 圆点网格 + 角落光晕（`background-attachment: fixed`）、侧边栏渐变底 + 顶部彩带 +
 品牌短横线、`_HERO` 横幅装饰圆、指标卡/oj-card 悬浮抬升）、
-AI 命题（model-config/problem-tasks/SSE 进度/取消/用量计费，api_key Fernet 加密永不返回；
+AI 命题（model-config/problem-tasks/SSE 进度/取消/失败重新开始/用量计费，api_key Fernet 加密永不返回；
 R3：模型调用期间 ticker 每 2s 推进度、cancel 推 final(cancelled) 即时通知观察者；
 费用 = 用户填写价格或接口返回 usage.cost，未填且接口未返回则 cost=null 标注；
 前端提示不同模型不同时段价格可能不同）。
@@ -48,7 +48,9 @@ R3：模型调用期间 ticker 每 2s 推进度、cancel 推 final(cancelled) �
 - 提交限流 `config.SUBMIT_RATE_LIMIT`（环境变量 `OJ_SUBMIT_RATE_LIMIT`），测试用 monkeypatch 收紧。
 - log 接口：details 仅管理员/公开题目可见；本人看未公开题目省略 details；
   403（已登录无权）与 200 都记 AccessLog；提交不存在返回 404 且不记审计。
-- GET /api/logs/access/ 返回纯数组（无 total）；Streamlit 审计页分页多取 1 条探测下一页。
+- GET /api/logs/access/ 返回含 log_id/username 的纯数组（无 total），保留 user_id 兼容；
+  Streamlit 审计页按用户名展示和筛选，每行末尾有详情/删除操作，当前页满时用同页长探测下一页；
+  DELETE /api/logs/access/{log_id} 仅管理员可用。
 - 题目详情页力扣式双栏：左侧题面 tabs，右侧内嵌提交面板（语言/代码按题目 id 缓存 widget key），
   提交后就地轮询结果；独立「提交评测」导航页已移除，代码提交统一走题目详情内嵌面板。
 - Streamlit AppTest 冒烟测试用 monkeypatch 把 OJ_API_BASE 指向死端口隔离真实后端，
@@ -57,7 +59,9 @@ R3：模型调用期间 ticker 每 2s 推进度、cancel 推 final(cancelled) �
   禁止用 HTML 链接、`st.link_button` 或自定义 popstate/reload 实现内部导航。
   透明 stHeader 需加 `pointer-events: none`，避免不可见的固定头栏拦截顶部区域点击。
 - 登录 Cookie 禁止写入 URL；旧版 oj_s/oj_u 会被移除。浏览器 Cookie 仅用于
-  整页刷新后恢复登录，不参与导航。评测和 AI 进度使用 st.fragment 的 1.5 秒片段轮询。
+  整页刷新后恢复登录，写入后回读确认，不参与导航；暂时连接失败不删 Cookie 或改变当前 URL。
+  评测和 AI 进度使用 st.fragment 的 1.5 秒片段轮询；AI 模型总超时默认 600 秒，可用 OJ_AI_REQUEST_TIMEOUT 覆盖；
+  模型请求默认不继承系统代理，需要时用 OJ_AI_TRUST_ENV=1 开启。
 - success 表示评测正常返回结果，WA/TLE/MLE/RE 均属于 success；全部 AC 才增加 resolve_count。
   error 用于 CE 或评测系统错误。题目显式限制优先于语言限制，再回退至系统默认。
 - 题目编辑省略 public_cases 时保留原策略；普通用户不能经题目增改接口更改公开策略。

@@ -1,6 +1,6 @@
-"""Step 5 访问审计接口：GET /api/logs/access/ 仅管理员。
+"""Step 5 访问审计接口：管理员查询和删除访问日志。
 
-筛选参数：user_id（str，api.md）、problem_id、page、page_size（分页语义同 submissions 列表）。
+筛选参数：username、user_id（保留兼容）、problem_id、page、page_size。
 action 仅为 view_logs；status 记录访问结果（200 允许 / 403 拒绝）。
 不记录：未登录、评测不存在、参数错误的访问（见 submissions.py 的 log 接口）。
 """
@@ -21,6 +21,7 @@ router = APIRouter(route_class=AuthenticatedRoute, prefix="/api/logs", tags=["lo
 @router.get("/access/")
 async def list_access_logs(
     user_id: str | None = None,   # api.md：user_id 为 str；SQLite 数值列与数字串比较自动匹配
+    username: str | None = None,
     problem_id: str | None = None,
     page: int | None = Query(None, ge=1),
     page_size: int | None = Query(None, ge=1),
@@ -33,22 +34,46 @@ async def list_access_logs(
     conds = []
     if user_id is not None:
         conds.append(AccessLog.user_id == user_id)
+    if username is not None:
+        conds.append(User.username == username)
     if problem_id is not None:
         conds.append(AccessLog.problem_id == problem_id)
 
-    stmt = select(AccessLog).where(*conds).order_by(AccessLog.id.desc())
+    stmt = (
+        select(AccessLog, User.username)
+        .outerjoin(User, User.id == AccessLog.user_id)
+        .where(*conds)
+        .order_by(AccessLog.id.desc())
+    )
     if page_size is not None:
         stmt = stmt.offset(((page or 1) - 1) * page_size).limit(page_size)
-    rows = (await db.scalars(stmt)).all()
+    rows = (await db.execute(stmt)).all()
 
-    # api.md：直接返回数组；示例中 user_id / status 均为字符串
+    # 保留 user_id 兼容原接口；前端使用 username 展示审计主体。
     return ok([
         {
-            "user_id": str(r.user_id),
-            "problem_id": r.problem_id,
-            "action": r.action,
-            "time": r.time.strftime("%Y-%m-%d %H:%M:%S"),
-            "status": str(r.status),
+            "log_id": str(log.id),
+            "username": username or "已删除用户",
+            "user_id": str(log.user_id),
+            "problem_id": log.problem_id,
+            "action": log.action,
+            "time": log.time.strftime("%Y-%m-%d %H:%M:%S"),
+            "status": str(log.status),
         }
-        for r in rows
+        for log, username in rows
     ])
+
+
+@router.delete("/access/{log_id}")
+async def delete_access_log(
+    log_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """删除单条访问审计日志；仅管理员可操作。"""
+    log = await db.get(AccessLog, log_id)
+    if log is None:
+        raise ApiError(404, "access log not found")
+    await db.delete(log)
+    await db.commit()
+    return ok({"log_id": str(log_id)}, msg="access log deleted")

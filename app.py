@@ -23,7 +23,7 @@ import streamlit as st
 
 from app import config
 from app.core.deps import SESSION_COOKIE
-from app.frontend_cookie import write_session_cookie
+from app.frontend_cookie import BROWSER_SESSION_COOKIE, write_session_cookie
 
 API_BASE = os.environ.get("OJ_API_BASE", "http://127.0.0.1:8000")
 
@@ -66,12 +66,17 @@ def _go(page: str, **params) -> None:
     st.switch_page(_ACTIVE_PAGES[page], query_params=query_params)
 
 
-def _clear_session():
+def _clear_session(*, clear_browser_cookie: bool = True):
     """清除本地登录态与页面状态（登出/会话过期时），并清掉 URL 中的会话参数。"""
     for key in ("me", "cookies", "prob_view", "prob_id",
                 "sub_view", "sub_id", "confirm_delete",
-                "ai_view", "ai_task_id", "audit_user", "audit_problem", "audit_page"):
+                "ai_view", "ai_task_id", "audit_user", "audit_username",
+                "ai_retry_notice", "audit_problem", "audit_page",
+                "audit_confirm_delete", "audit_flash"):
         st.session_state.pop(key, None)
+    st.session_state.pop("_session_restore_error", None)
+    if clear_browser_cookie:
+        st.session_state["_clear_browser_session_cookie"] = True
     try:
         for k in (_SESSION_PARAM, _UID_PARAM):
             st.query_params.pop(k, None)
@@ -81,28 +86,44 @@ def _clear_session():
 
 def _persist_login():
     """安排下次渲染同步浏览器 Cookie，并清除旧版 URL 凭据。"""
+    st.session_state.pop("_clear_browser_session_cookie", None)
+    st.session_state.pop("_session_restore_error", None)
     for key in (_SESSION_PARAM, _UID_PARAM):
         st.query_params.pop(key, None)
 
 
-def _restore_login():
+def _restore_login() -> str:
     """整页刷新后用浏览器 Cookie 向后端校验并恢复登录用户。"""
     for key in (_SESSION_PARAM, _UID_PARAM):
         st.query_params.pop(key, None)
     if st.session_state.get("me"):
-        return
+        return "authenticated"
     try:
-        token = st.context.cookies.get(SESSION_COOKIE)
+        # 前端持久化 Cookie 使用独立名称，避免与后端可能下发的
+        # HttpOnly oj_session 同名冲突；第二项仅用于平滑兼容旧版。
+        token = (
+            st.context.cookies.get(BROWSER_SESSION_COOKIE)
+            or st.context.cookies.get(SESSION_COOKIE)
+        )
     except Exception:
         token = None
     if not isinstance(token, str) or not token:
-        return
+        return "guest"
     st.session_state["cookies"] = {SESSION_COOKIE: token}
     try:
-        st.session_state["me"] = api("GET", "/api/auth/me")
-    except ApiError:
-        # api() 已清理无效或过期的会话。
-        return
+        st.session_state["me"] = api("GET", "/api/auth/me", timeout=5)
+    except ApiError as err:
+        if err.code in (401, 403):
+            # 401 时 api() 已清理会话；403 表示账号已不允许恢复。
+            if err.code == 403:
+                _clear_session()
+            return "guest"
+        # 连接、5xx 或非预期响应都不等于会话失效：保留 Cookie
+        # 和当前 URL，后端恢复后可原地继续。
+        st.session_state["_session_restore_error"] = err.msg
+        return "unavailable"
+    st.session_state.pop("_session_restore_error", None)
+    return "authenticated"
 
 
 def api(method: str, path: str, **kwargs):
@@ -113,11 +134,13 @@ def api(method: str, path: str, **kwargs):
     - 后端不可达抛 ApiError(0, …)
     """
     cookies = st.session_state.get("cookies", {})
+    request_timeout = kwargs.pop("timeout", 30)
     try:
         # 沙箱/开发机常设置 HTTP_PROXY，而部分客户端不识别 NO_PROXY 中的
         # `127.*` 写法；后端是本机服务，必须直连，避免请求被代理成 502。
         resp = httpx.request(
-            method, API_BASE + path, cookies=cookies, timeout=30, trust_env=False, **kwargs,
+            method, API_BASE + path, cookies=cookies, timeout=request_timeout,
+            trust_env=False, **kwargs,
         )
     except httpx.HTTPError as e:
         raise ApiError(0, f"无法连接后端（{API_BASE}）：{e}") from e
@@ -706,56 +729,123 @@ def page_languages():
     st.rerun()
 
 
+@st.dialog("访问日志详情")
+def _show_access_log_detail(row: dict):
+    """在当前页展示审计记录，不创建新页面或改变浏览器历史。"""
+    action_text = {"view_logs": "查看评测日志"}.get(row.get("action"), row.get("action") or "—")
+    status = str(row.get("status") or "")
+    fields = (
+        ("日志 ID", row.get("log_id")),
+        ("用户名", row.get("username") or "—"),
+        ("题目 ID", row.get("problem_id") or "—"),
+        ("行为", action_text),
+        ("访问结果", ACCESS_TEXT.get(status, status or "—")),
+        ("发生时间", row.get("time") or "—"),
+    )
+    for label, value in fields:
+        label_col, value_col = st.columns([1, 2])
+        label_col.markdown(f"**{label}**")
+        value_col.text(str(value))
+
+
 def page_audit_logs():
     """Step 5 日志与权限：访问审计列表（仅管理员，GET /api/logs/access/）。
 
-    接口返回纯数组无 total：多取 1 条探测下一页；筛选/页码存 session_state。
+    接口返回纯数组无 total：当前页满时额外探测下一页；
+    筛选/页码存 session_state。
     """
     st.title("🛡 访问审计")
     st.caption("记录所有评测日志查看行为（允许与拒绝）· 仅管理员可见")
+    if flash := st.session_state.pop("audit_flash", None):
+        st.success(flash)
 
-    if "audit_user" not in st.session_state:
-        st.session_state["audit_user"] = ""
+    if "audit_username" not in st.session_state:
+        st.session_state["audit_username"] = ""
     if "audit_problem" not in st.session_state:
         st.session_state["audit_problem"] = ""
     if "audit_page" not in st.session_state:
         st.session_state["audit_page"] = 1
 
     c1, c2, c3 = st.columns(3)
-    user_id = c1.text_input("用户 ID（筛选）", value=st.session_state["audit_user"], placeholder="留空为全部")
+    username = c1.text_input("用户名（筛选）", value=st.session_state["audit_username"],
+                             placeholder="留空为全部")
     problem_id = c2.text_input("题目 ID（筛选）", value=st.session_state["audit_problem"], placeholder="留空为全部")
     if c3.button("应用筛选"):
-        st.session_state["audit_user"] = user_id.strip()
+        st.session_state["audit_username"] = username.strip()
         st.session_state["audit_problem"] = problem_id.strip()
         st.session_state["audit_page"] = 1
+        st.session_state.pop("audit_confirm_delete", None)
         st.rerun()
 
     page_size = 20
-    params = {"page": st.session_state["audit_page"], "page_size": page_size + 1}
-    if st.session_state["audit_user"]:
-        params["user_id"] = st.session_state["audit_user"]
+    params = {"page": st.session_state["audit_page"], "page_size": page_size}
+    if st.session_state["audit_username"]:
+        params["username"] = st.session_state["audit_username"]
     if st.session_state["audit_problem"]:
         params["problem_id"] = st.session_state["audit_problem"]
     try:
         rows = api("GET", "/api/logs/access/", params=params)
+        # 后端使用 page_size 计算 offset，不能用“多取 1 条”，否则
+        # 下一页会永久跳过一条记录。当前页满时用同一页长探测下页。
+        has_next = False
+        if len(rows) == page_size:
+            probe_params = {**params, "page": st.session_state["audit_page"] + 1}
+            has_next = bool(api("GET", "/api/logs/access/", params=probe_params))
     except ApiError as e:
         friendly_error(e)
         return
-    has_next = len(rows) > page_size
-    rows = rows[:page_size]
 
     if not rows:
         st.info("暂无审计记录。")
     else:
-        rows_html = "".join(
-            f"<tr><td>{html.escape(str(r.get('user_id')))}</td>"
-            f"<td class='oj-mono'>{html.escape(str(r.get('problem_id')))}</td>"
-            f"<td>{html.escape(str(r.get('action')))}</td>"
-            f"<td>{_access_badge(r.get('status'))}</td>"
-            f"<td>{html.escape(str(r.get('time')))}</td></tr>"
-            for r in rows)
-        st.markdown(_html_table(["用户", "题目", "行为", "结果", "时间"], rows_html),
-                    unsafe_allow_html=True)
+        header = st.columns([1.35, 0.8, 1.05, 0.9, 1.65, 1.5])
+        for col, label in zip(header, ("用户名", "题目", "行为", "结果", "时间", "操作")):
+            col.markdown(f"**{label}**")
+        for row in rows:
+            log_id = str(row["log_id"])
+            with st.container(border=True):
+                user_col, problem_col, action_col, status_col, time_col, ops_col = st.columns(
+                    [1.35, 0.8, 1.05, 0.9, 1.65, 1.5]
+                )
+                user_col.text(str(row.get("username") or "—"))
+                problem_col.text(str(row.get("problem_id") or "—"))
+                action_col.text({"view_logs": "查看日志"}.get(
+                    row.get("action"), str(row.get("action") or "—")
+                ))
+                status_col.markdown(_access_badge(row.get("status")), unsafe_allow_html=True)
+                time_col.text(str(row.get("time") or "—"))
+                detail_col, delete_col = ops_col.columns(2)
+                if detail_col.button("查看详情", key=f"audit-detail-{log_id}",
+                                     width="stretch"):
+                    _show_access_log_detail(row)
+                if delete_col.button("删除", key=f"audit-delete-{log_id}",
+                                     width="stretch"):
+                    st.session_state["audit_confirm_delete"] = log_id
+                if st.session_state.get("audit_confirm_delete") == log_id:
+                    st.warning(
+                        f"确认删除 #{log_id}（{row.get('username') or '—'} / "
+                        f"题目 {row.get('problem_id') or '—'}）？删除后不可恢复。"
+                    )
+                    confirm_col, cancel_col = st.columns(2)
+                    if confirm_col.button(
+                        "确认删除", type="primary", width="stretch",
+                        key=f"audit-confirm-delete-{log_id}",
+                    ):
+                        try:
+                            api("DELETE", f"/api/logs/access/{log_id}")
+                        except ApiError as exc:
+                            friendly_error(exc)
+                        else:
+                            st.session_state.pop("audit_confirm_delete", None)
+                            if len(rows) == 1 and st.session_state["audit_page"] > 1:
+                                st.session_state["audit_page"] -= 1
+                            st.session_state["audit_flash"] = f"访问日志 #{log_id} 已删除。"
+                            st.rerun()
+                    if cancel_col.button(
+                        "取消", width="stretch", key=f"audit-cancel-delete-{log_id}",
+                    ):
+                        st.session_state.pop("audit_confirm_delete", None)
+                        st.rerun()
 
     prev_col, info_col, next_col = st.columns([1, 2, 1])
     if prev_col.button("上一页", disabled=st.session_state["audit_page"] <= 1, width="stretch"):
@@ -1342,6 +1432,8 @@ def _ai_task_detail():
         return
     status = d.get("status", "pending")
     st.title(f"AI 命题任务 #{tid}")
+    if notice := st.session_state.pop("ai_retry_notice", None):
+        st.success(notice)
     st.caption(" · ".join(x for x in (
         d.get("requirement", ""), f"改编自 {d['problem_id']}" if d.get("problem_id") else "",
         f"模型 {d.get('model') or '—'}", f"创建于 {d.get('created_at') or '—'}") if x))
@@ -1366,6 +1458,17 @@ def _ai_task_detail():
         _render_ai_result(d["result"], d.get("problem_id"))
     elif status == "failed":
         st.error((d.get("result") or {}).get("error") or "未知错误")
+        st.caption("重新开始会使用当前最新模型配置创建新任务，原失败记录与已产生的用量会保留。")
+        if st.button("🔄 重新开始此任务", type="primary", width="stretch"):
+            try:
+                restarted = api("POST", f"/api/ai/problem-tasks/{tid}/retry")
+            except ApiError as exc:
+                friendly_error(exc)
+            else:
+                st.session_state["ai_retry_notice"] = (
+                    f"已从任务 #{tid} 创建新任务 #{restarted['task_id']}。"
+                )
+                _go("ai_task", task=restarted["task_id"])
     elif status == "cancelled":
         st.info("任务已中断，后台执行已终止，可返回 AI 命题页重新创建任务。")
     _ai_usage_panel(d.get("usage"))
@@ -1392,6 +1495,10 @@ def page_ai_task():
 def _ai_home():
     st.title("✨ AI 智能命题")
     st.caption("配置大模型后，输入命题需求即可自动生成符合题库规范的题目，实时查看进度并可导入题库。")
+    st.caption(
+        f"推理模型可能需要数分钟；单次请求最长等待 "
+        f"{config.AI_REQUEST_TIMEOUT_SECONDS:g} 秒（可通过 OJ_AI_REQUEST_TIMEOUT 调整）。"
+    )
 
     # R2：模型配置（密钥加密存储，保存后不回显）
     cfg = {}
@@ -1548,13 +1655,45 @@ def _build_pages(me: dict | None) -> dict[str, object]:
 def main():
     global _ACTIVE_PAGES
     _inject_ui()
-    _restore_login()
+    restore_state = _restore_login()
     # 登录后的每次完整渲染都同步浏览器 Cookie。登录表单会立即 rerun，
     # 因此不能只依赖提交表单当次短暂挂载的组件来完成持久化。
     token = None
     if st.session_state.get("me"):
         token = st.session_state.get("cookies", {}).get(SESSION_COOKIE)
-    write_session_cookie(token, config.SESSION_TTL_SECONDS)
+    clear_cookie = bool(st.session_state.pop("_clear_browser_session_cookie", False))
+    cookie_result, cookie_marker = write_session_cookie(
+        token, config.SESSION_TTL_SECONDS, clear=clear_cookie,
+    )
+    if restore_state == "unavailable":
+        st.error("暂时无法连接 OJ 后端，登录会话已保留，不需要重新登录。")
+        st.caption(st.session_state.get("_session_restore_error", ""))
+        if st.button("重试连接", type="primary"):
+            st.rerun()
+        st.stop()
+    if token:
+        try:
+            browser_token = (
+                st.context.cookies.get(BROWSER_SESSION_COOKIE)
+                or st.context.cookies.get(SESSION_COOKIE)
+            )
+        except Exception:
+            browser_token = None
+        cookie_confirmed = (
+            browser_token == token
+            or (isinstance(cookie_result, dict)
+                and cookie_result.get("present") is True
+                and cookie_result.get("marker") == cookie_marker)
+        )
+        if not cookie_confirmed:
+            if (isinstance(cookie_result, dict)
+                    and cookie_result.get("marker") == cookie_marker
+                    and cookie_result.get("present") is False):
+                # Cookie 持久化失败不应阻断当前 Streamlit 会话的正常登录。
+                st.warning("当前登录已生效，但浏览器未能保存刷新凭据。")
+            else:
+                st.info("正在安全保存登录状态…")
+                st.stop()
     _ACTIVE_PAGES = _build_pages(st.session_state.get("me"))
     current_page = st.navigation(list(_ACTIVE_PAGES.values()), position="hidden")
     render_sidebar()

@@ -4,8 +4,8 @@ api.md 契约：
 - GET /api/submissions/{id}/log：本人（未公开）或管理员；details 仅管理员或
   public_cases=True 时可见；200/403 均记审计；未登录/不存在/参数错误不记。
 - PUT /api/problems/{id}/log_visibility：仅管理员；public_cases 选填默认 False。
-- GET /api/logs/access/：仅管理员；user_id(str)/problem_id 筛选；分页语义同提交列表；
-  响应为纯数组（user_id/status 为字符串，action=view_logs）。
+- GET /api/logs/access/：仅管理员；username/user_id/problem_id 筛选；返回用户名。
+- DELETE /api/logs/access/{log_id}：仅管理员可删除单条审计日志。
 """
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
@@ -208,10 +208,14 @@ async def test_access_logs_shape(client):
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert isinstance(data, list) and len(data) == 4
-    for row in data:                                    # api.md：user_id/status 为字符串
-        assert set(row) == {"user_id", "problem_id", "action", "time", "status"}
+    for row in data:
+        assert set(row) == {
+            "log_id", "username", "user_id", "problem_id", "action", "time", "status",
+        }
+        assert row["log_id"].isdigit()
         assert row["action"] == "view_logs"
         assert row["user_id"] == str(row["user_id"])
+        assert row["username"] in ("alice", "bob")
         assert row["status"] in ("200", "403")
         assert row["problem_id"] == "1001"
         assert row["time"]
@@ -219,6 +223,11 @@ async def test_access_logs_shape(client):
 
 async def test_access_logs_filters(client):
     await _seed_audits(client)
+    rows = (await client.get("/api/logs/access/", params={"username": "alice"})).json()["data"]
+    assert len(rows) == 3 and all(r["username"] == "alice" for r in rows)
+    rows = (await client.get("/api/logs/access/", params={"username": "nobody"})).json()["data"]
+    assert rows == []
+
     # user_id 为 str 参数：数字串匹配，任意字符串返回空数组（api.md 标注 str）
     rows = (await client.get("/api/logs/access/", params={"user_id": "2"})).json()["data"]
     assert rows and all(r["user_id"] == "2" for r in rows)
@@ -264,3 +273,28 @@ async def test_access_logs_permissions(client):
         assert (await anon.get("/api/logs/access/")).status_code == 401
     await login(client, "alice", "secret1")
     assert (await client.get("/api/logs/access/")).status_code == 403
+
+
+async def test_admin_can_delete_access_log(client):
+    await _seed_audits(client)
+    rows = (await client.get("/api/logs/access/")).json()["data"]
+    target = rows[0]["log_id"]
+
+    resp = await client.delete(f"/api/logs/access/{target}")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "code": 200, "msg": "access log deleted", "data": {"log_id": target},
+    }
+    remaining = (await client.get("/api/logs/access/")).json()["data"]
+    assert len(remaining) == 3 and all(row["log_id"] != target for row in remaining)
+    assert (await client.delete(f"/api/logs/access/{target}")).status_code == 404
+
+
+async def test_delete_access_log_permissions(client):
+    await _seed_audits(client)
+    target = (await client.get("/api/logs/access/")).json()["data"][0]["log_id"]
+    async with _new_client() as anon:
+        assert (await anon.delete(f"/api/logs/access/{target}")).status_code == 401
+    await login(client, "alice", "secret1")
+    assert (await client.delete(f"/api/logs/access/{target}")).status_code == 403
+    assert await _audit_count() == 4

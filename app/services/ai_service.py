@@ -47,7 +47,7 @@ TERMINAL_STATUSES = (STATUS_DONE, STATUS_CANCELLED, STATUS_FAILED)
 
 DEFAULT_PRICE_UNIT = 1_000_000      # api.md 示例计价单位（每百万 Token）
 CURRENCY = "CNY"
-REQUEST_TIMEOUT = 120.0             # 模型调用总超时（秒），失败即任务 failed
+REQUEST_TIMEOUT = config.AI_REQUEST_TIMEOUT_SECONDS  # 模型调用总超时（默认 10 分钟）
 
 CONFIG_PATH = config.DATA_DIR / "ai_config.json"
 KEY_PATH = config.DATA_DIR / "ai_secret.key"
@@ -273,12 +273,37 @@ def _sanitize(msg: str, secret: str | None) -> str:
 async def _request_model(cfg: dict, payload: dict) -> dict:
     """向 OpenAI 兼容接口发起请求并解析响应（独立函数便于测试 mock）。"""
     headers = {"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"}
-    timeout = httpx.Timeout(REQUEST_TIMEOUT, connect=15.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        url = cfg["provider_url"].rstrip("/")
-        if not urlsplit(url).path or url.endswith("/v1"):
-            url += "/chat/completions"
-        resp = await client.post(url, json=payload, headers=headers)
+    # 连接/写入超时用于快速识别错误地址；推理阶段的总时限由 _run_task
+    # 外层唯一的 asyncio.wait_for 控制，避免 httpx 读超时与外层超时重复竞争。
+    timeout = httpx.Timeout(None, connect=30.0, write=60.0, pool=30.0)
+    url = cfg["provider_url"].rstrip("/")
+    if not urlsplit(url).path or url.endswith("/v1"):
+        url += "/chat/completions"
+    host = urlsplit(url).hostname or "未知主机"
+    try:
+        # 默认忽略宿主机上遗留的 HTTP_PROXY/HTTPS_PROXY；如部署
+        # 确实依赖系统代理，可通过 OJ_AI_TRUST_ENV=1 显式开启。
+        async with httpx.AsyncClient(timeout=timeout, trust_env=config.AI_TRUST_ENV) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+    except (httpx.ConnectError, httpx.ProxyError) as exc:
+        proxy_hint = (
+            "当前已启用系统代理，请确认代理服务可用。"
+            if config.AI_TRUST_ENV else
+            "当前默认直连；如必须使用系统代理，请设置 OJ_AI_TRUST_ENV=1 后重启。"
+        )
+        raise RuntimeError(
+            f"无法连接模型服务 {host}；请检查 provider_url、DNS、"
+            f"服务器出站网络和防火墙。{proxy_hint}"
+        ) from exc
+    except httpx.ConnectTimeout as exc:
+        raise RuntimeError(
+            f"连接模型服务 {host} 超时；请检查 DNS、出站网络和代理设置。"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise RuntimeError(
+            f"模型服务 {host} 网络请求失败（{type(exc).__name__}）；"
+            "请检查服务器网络后重试。"
+        ) from exc
     if resp.status_code != 200:
         hint = ""
         if resp.status_code == 404:
@@ -293,7 +318,7 @@ async def _call_model(cfg: dict, prompt: str, on_usage=None) -> tuple[dict, str]
     """调用 OpenAI 兼容 chat/completions 协议；返回 (usage, content)。
 
     健壮性（api.md 要求处理模型调用失败）：
-    - max_tokens 取 8K（DeepSeek 等主流模型上限，避免长输出被截断为空）；
+    - 不设置 max_tokens，由模型服务使用其自身允许的输出上限；
     - 推理模型（模型名含 reasoner）不传 temperature（DeepSeek R1 不支持该参数）；
     - 空输出自动重试一次（模型偶发）；仍为空时错误信息带 finish_reason 与排查提示。
     """
@@ -303,7 +328,6 @@ async def _call_model(cfg: dict, prompt: str, on_usage=None) -> tuple[dict, str]
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
-        "max_tokens": 8192,
     }
     if "reasoner" not in cfg["model"].lower():
         payload["temperature"] = 0.3
@@ -319,15 +343,18 @@ async def _call_model(cfg: dict, prompt: str, on_usage=None) -> tuple[dict, str]
                                               content if isinstance(content, str) else "", prompt))
         if on_usage:
             await on_usage(usage)
+        reason = (data.get("choices") or [{}])[0].get("finish_reason")
+        if reason == "length":
+            raise RuntimeError(
+                "model output stopped (finish_reason=length)"
+                "模型服务已达到自身的输出或上下文上限，"
+                "请缩短命题要求或选择上下文上限更大的模型）"
+            )
         if isinstance(content, str) and content.strip():
             return usage, content
         if attempt == 1:
             continue   # 空输出：重试一次
-        reason = (data.get("choices") or [{}])[0].get("finish_reason")
-        if reason == "length":
-            hint = "（输出被 max_tokens 截断：请简化命题需求，或换用非推理模型如 deepseek-chat）"
-        else:
-            hint = "（请确认模型名为官方 API ID，如 DeepSeek 的 deepseek-chat / deepseek-reasoner）"
+        hint = "（请确认模型名为服务商提供的有效 API ID）"
         raise RuntimeError(f"model returned empty content (finish_reason={reason}){hint}")
 
 
@@ -439,7 +466,13 @@ async def _run_task(task_id: int, cfg: dict | None = None) -> None:
         raise
     except Exception as e:
         secret = cfg.get("api_key") if cfg else None
-        msg = _sanitize(str(e), secret) or "model request timed out"
+        if isinstance(e, asyncio.TimeoutError):
+            msg = (
+                f"model request timed out after {REQUEST_TIMEOUT:g}s; "
+                "you can increase OJ_AI_REQUEST_TIMEOUT for slower reasoning models"
+            )
+        else:
+            msg = _sanitize(str(e), secret) or "model request failed without an error message"
         if task_id not in _cancelled:
             try:
                 async with SessionLocal() as db:
@@ -470,20 +503,57 @@ async def create_task(user: User, body: AiTaskIn) -> AiTask:
             if e.status == 404:
                 raise ApiError(404, "problem not found")
             raise
+    return await _enqueue_task(user.id, body.requirement, body.problem_id, cfg)
+
+
+async def _enqueue_task(
+    user_id: int,
+    requirement: str,
+    problem_id: str | None,
+    cfg: dict,
+) -> AiTask:
+    """创建一条新任务并调度执行；新建和失败重试共用此路径。"""
     async with SessionLocal() as db:
-        t = AiTask(
-            user_id=user.id, requirement=body.requirement, problem_id=body.problem_id,
+        task = AiTask(
+            user_id=user_id, requirement=requirement, problem_id=problem_id,
             status=STATUS_PENDING, progress=0.0,
             provider_url=cfg["provider_url"], model=cfg["model"],
         )
-        db.add(t)
+        db.add(task)
         await db.commit()
-        await db.refresh(t)
-        task_id = t.id
+        await db.refresh(task)
+        task_id = task.id
     _cancelled.discard(task_id)
     # 固定本次调用的 URL、模型、密钥和价格，配置变更只作用于后续任务。
     _tasks[task_id] = asyncio.create_task(_run_task(task_id, cfg))
-    return t
+    return task
+
+
+async def retry_task(user: User, task_id: int) -> AiTask:
+    """从失败任务创建新任务，保留原失败原因及已产生的用量。"""
+    async with SessionLocal() as db:
+        source = await db.get(AiTask, task_id)
+        if source is None:
+            raise ApiError(404, "task not found")
+        if user.role != "admin" and source.user_id != user.id:
+            raise ApiError(403, "permission denied")
+        if source.status != STATUS_FAILED:
+            raise ApiError(409, "only failed tasks can be retried")
+        owner_id = source.user_id
+        requirement = source.requirement
+        problem_id = source.problem_id
+
+    cfg = await config_store.load()
+    if cfg is None:
+        raise ApiError(400, "model config not set")
+    if problem_id:
+        try:
+            await store.get(problem_id)
+        except ApiError as exc:
+            if exc.status == 404:
+                raise ApiError(404, "problem not found")
+            raise
+    return await _enqueue_task(owner_id, requirement, problem_id, cfg)
 
 
 async def list_tasks(user: User, limit: int = 50) -> list[dict]:

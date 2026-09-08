@@ -7,6 +7,7 @@
 - GET  /api/ai/problem-tasks/{task_id}          任务状态（创建者或管理员）
 - GET  /api/ai/problem-tasks/{task_id}/events   SSE 进度事件（创建者或管理员）
 - PUT  /api/ai/problem-tasks/{task_id}/cancel   取消任务（真正终止后台执行；已结束 409）
+- POST /api/ai/problem-tasks/{task_id}/retry    从失败记录创建新任务
 
 安全要求（api.md）：api_key 不得经任何接口返回；费用公式与用量统计见
 app/services/ai_service.py（模型不返回用量时按字符数估算并标注 estimated）。
@@ -89,3 +90,14 @@ async def get_problem_task_events(task_id: int, user: User = Depends(get_current
 async def cancel_problem_task(task_id: int, user: User = Depends(get_current_user)):
     status = await ai_service.cancel_task(user, task_id)
     return ok({"task_id": task_id, "status": status}, msg="task cancelled")
+
+
+@router.post("/problem-tasks/{task_id}/retry")
+async def retry_problem_task(task_id: int, user: User = Depends(get_current_user)):
+    """仅失败任务可重试；新建记录以保留原失败原因与费用。"""
+    task = await ai_service.retry_task(user, task_id)
+    return ok({
+        "task_id": task.id,
+        "status": task.status,
+        "retried_from": task_id,
+    }, msg="task restarted")
