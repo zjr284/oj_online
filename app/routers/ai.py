@@ -57,7 +57,11 @@ async def get_model_config(user: User = Depends(get_current_user)):
 @router.post("/problem-tasks/")
 async def create_problem_task(body: AiTaskIn, user: User = Depends(get_current_user)):
     task = await ai_service.create_task(user, body)
-    return ok({"task_id": task.id, "status": task.status}, msg="task created")
+    return ok({
+        "task_id": task.id,
+        "status": task.status,
+        "generation_mode": task.generation_mode,
+    }, msg="task created")
 
 
 @router.get("/problem-tasks/")

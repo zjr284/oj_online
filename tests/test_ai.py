@@ -4,6 +4,7 @@ import json
 import os
 
 import httpx
+from sqlalchemy import create_engine, inspect, text
 
 from app.main import app
 from conftest import login
@@ -65,6 +66,26 @@ def test_reasoning_model_timeout_has_safe_default():
     assert ai_service.REQUEST_TIMEOUT == config.AI_REQUEST_TIMEOUT_SECONDS
     if "OJ_AI_REQUEST_TIMEOUT" not in os.environ:
         assert ai_service.REQUEST_TIMEOUT == 600
+
+
+def test_generation_mode_column_migrates_existing_database(tmp_path):
+    """旧数据库保留全部任务，并幂等补充 generation_mode 字段。"""
+    from app.database import _migrate_columns
+
+    db_engine = create_engine(f"sqlite:///{tmp_path / 'legacy.db'}")
+    with db_engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE ai_tasks (id INTEGER PRIMARY KEY, requirement TEXT NOT NULL)"
+        ))
+        conn.execute(text("INSERT INTO ai_tasks (id, requirement) VALUES (1, '旧任务')"))
+        _migrate_columns(conn)
+        _migrate_columns(conn)
+        columns = {column["name"] for column in inspect(conn).get_columns("ai_tasks")}
+        count = conn.execute(text("SELECT COUNT(*) FROM ai_tasks")).scalar_one()
+    db_engine.dispose()
+
+    assert "generation_mode" in columns
+    assert count == 1
 
 
 def _mock_model(monkeypatch, content=None, usage=None, delay=0.0, exc=None):
@@ -131,6 +152,87 @@ async def test_model_config_security(client):
     assert (await client.put("/api/ai/model-config", json=bad)).status_code == 400
     bad = dict(CONFIG, input_price=-1)
     assert (await client.put("/api/ai/model-config", json=bad)).status_code == 400
+
+
+async def test_deepseek_generation_modes_select_model_and_reasoning(client, monkeypatch):
+    """三档模式必须生成准确且互不混淆的 DeepSeek 请求参数。"""
+    import app.services.ai_service as svc
+
+    await login(client, "admin", "admintestpassword")
+    deepseek = {
+        **CONFIG,
+        "provider_url": "https://api.deepseek.com/chat/completions",
+        "model": "deepseek-reasoner",
+    }
+    assert (await client.put("/api/ai/model-config", json=deepseek)).status_code == 200
+    payloads = []
+
+    async def fake(_cfg, payload):
+        payloads.append(payload)
+        return {
+            "choices": [{"message": {"content": json.dumps(GENERATED, ensure_ascii=False)}}],
+            "usage": FAKE_USAGE,
+        }
+
+    monkeypatch.setattr(svc, "_request_model", fake)
+    expected = {
+        "fast": ("deepseek-v4-flash", "disabled", None),
+        "balanced": ("deepseek-v4-flash", "enabled", "low"),
+        "quality": ("deepseek-v4-pro", "enabled", "high"),
+    }
+    for mode, (model, thinking, effort) in expected.items():
+        resp = await client.post("/api/ai/problem-tasks/", json={
+            "requirement": "出一道题",
+            "generation_mode": mode,
+        })
+        assert resp.status_code == 200
+        assert resp.json()["data"]["generation_mode"] == mode
+        task = await _wait_task(client, resp.json()["data"]["task_id"])
+        assert task["generation_mode"] == mode
+        assert task["model"] == model
+
+        payload = payloads[-1]
+        assert payload["model"] == model
+        assert payload["thinking"] == {"type": thinking}
+        assert payload.get("reasoning_effort") == effort
+        assert ("temperature" in payload) is (thinking == "disabled")
+        assert "max_tokens" not in payload
+
+
+async def test_generation_modes_do_not_change_custom_provider(client, monkeypatch):
+    """旧客户端不传模式时行为不变；自定义提供商不会收到 DeepSeek 参数。"""
+    import app.services.ai_service as svc
+
+    await _config(client)
+    payloads = []
+
+    async def fake(_cfg, payload):
+        payloads.append(payload)
+        return {
+            "choices": [{"message": {"content": json.dumps(GENERATED)}}],
+            "usage": FAKE_USAGE,
+        }
+
+    monkeypatch.setattr(svc, "_request_model", fake)
+    resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "兼容旧请求"})
+    task = await _wait_task(client, resp.json()["data"]["task_id"])
+    assert task["model"] == CONFIG["model"]
+    assert task["generation_mode"] is None
+    assert "thinking" not in payloads[-1]
+    assert "reasoning_effort" not in payloads[-1]
+
+    resp = await client.post("/api/ai/problem-tasks/", json={
+        "requirement": "不应误发专有参数",
+        "generation_mode": "fast",
+    })
+    assert resp.status_code == 400
+    assert "DeepSeek" in resp.json()["msg"]
+
+    resp = await client.post("/api/ai/problem-tasks/", json={
+        "requirement": "非法模式",
+        "generation_mode": "turbo",
+    })
+    assert resp.status_code == 400
 
 
 async def test_get_config_unconfigured_and_events_guards(client):
@@ -281,6 +383,44 @@ async def test_failed_task_retry_creates_new_task_and_preserves_history(client, 
     assert old_after["status"] == "failed"
     assert old_after["result"] == old_before["result"]
     assert old_after["usage"] == old_before["usage"]
+
+
+async def test_failed_deepseek_task_retry_preserves_generation_mode(client, monkeypatch):
+    """失败重试使用最新密钥/接口配置，但保持用户为原任务选择的档位。"""
+    import app.services.ai_service as svc
+
+    await login(client, "admin", "admintestpassword")
+    deepseek = {
+        **CONFIG,
+        "provider_url": "https://api.deepseek.com/chat/completions",
+        "model": "deepseek-reasoner",
+    }
+    assert (await client.put("/api/ai/model-config", json=deepseek)).status_code == 200
+    _mock_model(monkeypatch, content="not json")
+    resp = await client.post("/api/ai/problem-tasks/", json={
+        "requirement": "出一道困难题",
+        "generation_mode": "quality",
+    })
+    failed_id = resp.json()["data"]["task_id"]
+    assert (await _wait_task(client, failed_id))["status"] == "failed"
+
+    captured = {}
+
+    async def fake(_cfg, payload):
+        captured.update(payload)
+        return {
+            "choices": [{"message": {"content": json.dumps(GENERATED)}}],
+            "usage": FAKE_USAGE,
+        }
+
+    monkeypatch.setattr(svc, "_request_model", fake)
+    resp = await client.post(f"/api/ai/problem-tasks/{failed_id}/retry")
+    retried = await _wait_task(client, resp.json()["data"]["task_id"])
+    assert retried["status"] == "done"
+    assert retried["generation_mode"] == "quality"
+    assert retried["model"] == "deepseek-v4-pro"
+    assert captured["thinking"] == {"type": "enabled"}
+    assert captured["reasoning_effort"] == "high"
 
 
 async def test_cancel_really_terminates(client, monkeypatch):

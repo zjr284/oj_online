@@ -130,6 +130,7 @@ def test_ai_and_language_pages_are_available_to_regular_users(monkeypatch):
     assert any("模型密钥" in l for l in labels)
     assert any("输入价格" in l for l in labels)
     assert any("输出价格" in l for l in labels)
+    assert any(r.label == "生成模式" for r in at.radio)
 
 
 def _fake_api(monkeypatch, state):
@@ -171,6 +172,26 @@ def _fake_api(monkeypatch, state):
                 data = {'name': kwargs['json']['name']}
             else:
                 data = {'name': languages}
+        elif path == '/api/ai/model-config':
+            if method == 'PUT':
+                state['ai_config'] = {**kwargs['json'], 'api_key_configured': True}
+            data = state.get('ai_config', {'api_key_configured': False})
+        elif path == '/api/ai/problem-tasks/' and method == 'POST':
+            state['ai_task_request'] = kwargs['json']
+            data = {
+                'task_id': 21,
+                'status': 'pending',
+                'generation_mode': kwargs['json'].get('generation_mode'),
+            }
+        elif path == '/api/ai/problem-tasks/':
+            data = []
+        elif path == '/api/ai/problem-tasks/21':
+            data = {
+                'task_id': 21, 'status': 'pending', 'progress': 0,
+                'requirement': '测试命题', 'model': 'deepseek-v4-flash',
+                'generation_mode': state.get('ai_task_request', {}).get('generation_mode'),
+                'result': None, 'usage': None,
+            }
         elif path == '/api/ai/problem-tasks/7/cancel':
             state['status'] = 'cancelled'
             data = {'task_id': 7, 'status': 'cancelled'}
@@ -212,6 +233,35 @@ def _fake_api(monkeypatch, state):
         return httpx.Response(200, json={'code': 200, 'msg': 'success', 'data': data},
                               headers=headers, request=httpx.Request(method, url))
     monkeypatch.setattr(httpx, 'request', request)
+
+
+def test_ai_deepseek_mode_is_sent_with_new_task(monkeypatch):
+    state = {'ai_config': {
+        'provider_url': 'https://api.deepseek.com/chat/completions',
+        'model': 'deepseek-reasoner',
+        'api_key_configured': True,
+        'input_price': None, 'output_price': None,
+        'price_unit': 1000000, 'currency': 'CNY',
+    }}
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
+    at.run()
+    _open_page(at, 'ai')
+
+    mode = next(item for item in at.radio if item.label == '生成模式')
+    assert mode.disabled is False
+    assert mode.value == 'balanced'
+    mode.set_value('fast')
+    next(item for item in at.text_area if item.label == '命题需求').set_value('出一道快速入门题')
+    next(item for item in at.button if item.label == '✨ 创建命题任务').click().run()
+
+    assert not at.exception
+    assert state['ai_task_request'] == {
+        'requirement': '出一道快速入门题',
+        'problem_id': None,
+        'generation_mode': 'fast',
+    }
 
 
 def test_language_page_lists_and_registers_for_regular_user(monkeypatch):

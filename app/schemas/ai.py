@@ -3,6 +3,7 @@
 接口规格见 api.md「AI 智能命题接口（建议路径）」：
 PUT /api/ai/model-config 与 POST /api/ai/problem-tasks/。
 """
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
@@ -40,6 +41,10 @@ class ModelConfigIn(BaseModel):
 class AiTaskIn(BaseModel):
     requirement: str = Field(min_length=1, description="命题需求描述")
     problem_id: str | None = Field(default=None, pattern=PROBLEM_ID_RE)
+    generation_mode: Literal["fast", "balanced", "quality"] | None = Field(
+        default=None,
+        description="DeepSeek 命题模式；不传时沿用配置中的原始模型行为",
+    )
 
     @field_validator("requirement")
     @classmethod

@@ -26,5 +26,6 @@ class AiTask(Base):
     usage: Mapped[dict | None] = mapped_column(JSON, nullable=True)   # token 用量与费用
     provider_url: Mapped[str | None] = mapped_column(String(256), nullable=True)
     model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    generation_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

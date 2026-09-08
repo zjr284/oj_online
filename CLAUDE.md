@@ -40,6 +40,7 @@ routers（HTTP 语义）→ services（业务逻辑）→ models / ProblemStore�
 品牌短横线、`_HERO` 横幅装饰圆、指标卡/oj-card 悬浮抬升）、
 AI 命题（model-config/problem-tasks/SSE 进度/取消/失败重新开始/用量计费，api_key Fernet 加密永不返回；
 R3：模型调用期间 ticker 每 2s 推进度、cancel 推 final(cancelled) 即时通知观察者；
+DeepSeek 三档模式：极速 Flash/关闭思考、均衡 Flash/low、高质量 Pro/high；
 费用 = 用户填写价格或接口返回 usage.cost，未填且接口未返回则 cost=null 标注；
 前端提示不同模型不同时段价格可能不同）。
 

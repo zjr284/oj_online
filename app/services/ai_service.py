@@ -49,6 +49,24 @@ DEFAULT_PRICE_UNIT = 1_000_000      # api.md 示例计价单位（每百万 Toke
 CURRENCY = "CNY"
 REQUEST_TIMEOUT = config.AI_REQUEST_TIMEOUT_SECONDS  # 模型调用总超时（默认 10 分钟）
 
+GENERATION_PROFILES = {
+    "fast": {
+        "model": "deepseek-v4-flash",
+        "thinking": "disabled",
+        "reasoning_effort": None,
+    },
+    "balanced": {
+        "model": "deepseek-v4-flash",
+        "thinking": "enabled",
+        "reasoning_effort": "low",
+    },
+    "quality": {
+        "model": "deepseek-v4-pro",
+        "thinking": "enabled",
+        "reasoning_effort": "high",
+    },
+}
+
 CONFIG_PATH = config.DATA_DIR / "ai_config.json"
 KEY_PATH = config.DATA_DIR / "ai_secret.key"
 
@@ -147,6 +165,36 @@ class ModelConfigStore:
 
 
 config_store = ModelConfigStore()
+
+
+def supports_generation_modes(cfg: dict) -> bool:
+    """三档预设只向 DeepSeek 官方接口发送其专有 thinking 参数。"""
+    return (urlsplit(cfg.get("provider_url", "")).hostname or "").lower() == "api.deepseek.com"
+
+
+def apply_generation_mode(cfg: dict, mode: str | None) -> dict:
+    """返回本次任务的配置快照；不修改磁盘上的模型配置。"""
+    effective = dict(cfg)
+    if mode is None:
+        return effective
+    if mode not in GENERATION_PROFILES:
+        raise ApiError(400, "invalid generation mode")
+    if not supports_generation_modes(cfg):
+        raise ApiError(400, "generation modes require the official DeepSeek API endpoint")
+
+    profile = GENERATION_PROFILES[mode]
+    configured_model = effective["model"]
+    effective["model"] = profile["model"]
+    effective["_generation_mode"] = mode
+    effective["_thinking"] = profile["thinking"]
+    effective["_reasoning_effort"] = profile["reasoning_effort"]
+
+    # 手工价格属于配置时填写的模型。预设切换到另一模型时不能沿用，
+    # 否则费用会被错误计算；若提供商直接返回 cost，仍优先使用它。
+    if effective["model"] != configured_model:
+        effective["input_price"] = None
+        effective["output_price"] = None
+    return effective
 
 
 # ---- 提示词与结果解析 ----
@@ -329,7 +377,12 @@ async def _call_model(cfg: dict, prompt: str, on_usage=None) -> tuple[dict, str]
             {"role": "user", "content": prompt},
         ],
     }
-    if "reasoner" not in cfg["model"].lower():
+    thinking = cfg.get("_thinking")
+    if thinking:
+        payload["thinking"] = {"type": thinking}
+    if cfg.get("_reasoning_effort"):
+        payload["reasoning_effort"] = cfg["_reasoning_effort"]
+    if thinking != "enabled" and "reasoner" not in cfg["model"].lower():
         payload["temperature"] = 0.3
 
     usage = None
@@ -347,7 +400,7 @@ async def _call_model(cfg: dict, prompt: str, on_usage=None) -> tuple[dict, str]
         if reason == "length":
             raise RuntimeError(
                 "model output stopped (finish_reason=length)"
-                "模型服务已达到自身的输出或上下文上限，"
+                "（OJ 未设置 max_tokens；模型服务已达到自身的输出或上下文上限，"
                 "请缩短命题要求或选择上下文上限更大的模型）"
             )
         if isinstance(content, str) and content.strip():
@@ -371,6 +424,7 @@ def _serialize(t: AiTask) -> dict:
         "problem_id": t.problem_id,
         "provider_url": t.provider_url,
         "model": t.model,
+        "generation_mode": t.generation_mode,
         "created_at": t.created_at.strftime("%Y-%m-%d %H:%M:%S") if t.created_at else None,
     }
 
@@ -503,7 +557,10 @@ async def create_task(user: User, body: AiTaskIn) -> AiTask:
             if e.status == 404:
                 raise ApiError(404, "problem not found")
             raise
-    return await _enqueue_task(user.id, body.requirement, body.problem_id, cfg)
+    cfg = apply_generation_mode(cfg, body.generation_mode)
+    return await _enqueue_task(
+        user.id, body.requirement, body.problem_id, cfg, body.generation_mode,
+    )
 
 
 async def _enqueue_task(
@@ -511,6 +568,7 @@ async def _enqueue_task(
     requirement: str,
     problem_id: str | None,
     cfg: dict,
+    generation_mode: str | None = None,
 ) -> AiTask:
     """创建一条新任务并调度执行；新建和失败重试共用此路径。"""
     async with SessionLocal() as db:
@@ -518,6 +576,7 @@ async def _enqueue_task(
             user_id=user_id, requirement=requirement, problem_id=problem_id,
             status=STATUS_PENDING, progress=0.0,
             provider_url=cfg["provider_url"], model=cfg["model"],
+            generation_mode=generation_mode,
         )
         db.add(task)
         await db.commit()
@@ -542,6 +601,7 @@ async def retry_task(user: User, task_id: int) -> AiTask:
         owner_id = source.user_id
         requirement = source.requirement
         problem_id = source.problem_id
+        generation_mode = source.generation_mode
 
     cfg = await config_store.load()
     if cfg is None:
@@ -553,7 +613,11 @@ async def retry_task(user: User, task_id: int) -> AiTask:
             if exc.status == 404:
                 raise ApiError(404, "problem not found")
             raise
-    return await _enqueue_task(owner_id, requirement, problem_id, cfg)
+    # 新版任务沿用原模式；旧任务在 DeepSeek 官方接口下默认使用均衡模式。
+    if generation_mode is None and supports_generation_modes(cfg):
+        generation_mode = "balanced"
+    cfg = apply_generation_mode(cfg, generation_mode)
+    return await _enqueue_task(owner_id, requirement, problem_id, cfg, generation_mode)
 
 
 async def list_tasks(user: User, limit: int = 50) -> list[dict]:

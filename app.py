@@ -16,6 +16,7 @@ import json
 import os
 import re
 import time
+from urllib.parse import urlsplit
 
 import httpx
 import pandas as pd
@@ -36,6 +37,11 @@ VERDICT_TEXT = {
 }
 ROLE_TEXT = {"user": "用户", "admin": "管理员", "banned": "封禁"}
 ACCESS_TEXT = {"200": "✅ 允许", "401": "🚫 未登录", "403": "⛔ 拒绝"}
+AI_MODE_LABELS = {
+    "fast": "⚡ 极速｜Flash · 关闭思考",
+    "balanced": "⚖️ 均衡｜Flash · 低推理强度",
+    "quality": "🎯 高质量｜Pro · 高推理强度",
+}
 
 
 # ---------- 统一 API 封装（任务 4） ----------
@@ -57,6 +63,13 @@ _ACTIVE_PAGES: dict[str, object] = {}
 
 def _valid_problem_id(value: object) -> bool:
     return bool(re.fullmatch(r"[0-9]{1,18}", str(value)))
+
+
+def _supports_deepseek_modes(provider_url: object) -> bool:
+    try:
+        return (urlsplit(str(provider_url)).hostname or "").lower() == "api.deepseek.com"
+    except ValueError:
+        return False
 
 
 def _go(page: str, **params) -> None:
@@ -1436,6 +1449,7 @@ def _ai_task_detail():
         st.success(notice)
     st.caption(" · ".join(x for x in (
         d.get("requirement", ""), f"改编自 {d['problem_id']}" if d.get("problem_id") else "",
+        AI_MODE_LABELS.get(d.get("generation_mode"), ""),
         f"模型 {d.get('model') or '—'}", f"创建于 {d.get('created_at') or '—'}") if x))
     st.markdown(f"### {_ai_status_badge(status)}", unsafe_allow_html=True)
     st.progress(min(float(d.get("progress") or 0), 1.0))
@@ -1578,6 +1592,19 @@ def _ai_home():
                                    placeholder="例如：出一道考查二分查找的题目，难度中等，n ≤ 10^6，包含边界测试点")
         pid = st.selectbox("参考/改编题目（可选）", [""] + [p["id"] for p in problems],
                            format_func=lambda x: x or "— 新题目 —")
+        supports_modes = bool(cfg.get("api_key_configured") and
+                              _supports_deepseek_modes(cfg.get("provider_url")))
+        generation_mode = st.radio(
+            "生成模式",
+            list(AI_MODE_LABELS),
+            index=1,
+            format_func=AI_MODE_LABELS.get,
+            horizontal=True,
+            disabled=not supports_modes,
+            help="DeepSeek 官方接口支持：极速适合常规题，均衡兼顾速度与推理，高质量适合困难题。",
+        )
+        if not supports_modes:
+            st.caption("三档模式需要先配置 DeepSeek 官方 API；其他提供商继续使用已配置的自定义模型。")
         if st.form_submit_button("✨ 创建命题任务", width="stretch"):
             if not requirement.strip():
                 st.error("命题需求不能为空。")
@@ -1586,6 +1613,7 @@ def _ai_home():
                     resp = api("POST", "/api/ai/problem-tasks/", json={
                         "requirement": requirement.strip(),
                         "problem_id": pid or None,
+                        "generation_mode": generation_mode if supports_modes else None,
                     })
                     st.success("任务已创建，开始生成…")
                     time.sleep(0.4)
@@ -1607,10 +1635,11 @@ def _ai_home():
         f"<tr><td class='oj-mono'>#{t.get('task_id')}</td>"
         f"<td>{_ai_status_badge(t.get('status'))}</td>"
         f"<td>{round((t.get('progress') or 0) * 100)}%</td>"
+        f"<td>{html.escape(AI_MODE_LABELS.get(t.get('generation_mode'), '自定义'))}</td>"
         f"<td>{html.escape(str(t.get('model', '—')))}</td>"
         f"<td>{html.escape(str(t.get('created_at', '—')))}</td></tr>"
         for t in tasks)
-    st.markdown(_html_table(["ID", "状态", "进度", "模型", "创建时间"], rows_html),
+    st.markdown(_html_table(["ID", "状态", "进度", "模式", "模型", "创建时间"], rows_html),
                 unsafe_allow_html=True)
     sel = st.selectbox("查看任务详情", [t["task_id"] for t in tasks], format_func=lambda x: f"#{x}")
     if st.button("打开详情"):

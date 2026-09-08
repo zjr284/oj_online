@@ -4,6 +4,7 @@
 如需切换 PostgreSQL/MySQL，只需修改 config.DB_URL 并安装对应异步驱动，
 业务代码（models/services/routers）不受影响。
 """
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -20,12 +21,23 @@ SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
 async def init_db() -> None:
-    """建表（create_all 幂等，可重复调用）。"""
+    """建表并补齐轻量字段迁移（均幂等，可重复调用）。"""
     from app import models  # noqa: F401  确保所有模型已注册到 Base.metadata
 
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_migrate_columns)
+
+
+def _migrate_columns(conn) -> None:
+    """为没有迁移框架的既有部署补齐向后兼容的可空字段。"""
+    tables = set(inspect(conn).get_table_names())
+    if "ai_tasks" not in tables:
+        return
+    columns = {column["name"] for column in inspect(conn).get_columns("ai_tasks")}
+    if "generation_mode" not in columns:
+        conn.execute(text("ALTER TABLE ai_tasks ADD COLUMN generation_mode VARCHAR(16)"))
 
 
 async def get_db():

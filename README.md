@@ -129,7 +129,7 @@ models   →  数据结构（ORM / 文件）
 |---|---|
 | `PUT /api/ai/model-config` | 配置 provider_url/model/api_key/价格（登录用户）；**api_key 加密存储且永不返回** |
 | `GET /api/ai/model-config` | 查询配置公开字段（等价扩展；仍不返回 api_key） |
-| `POST /api/ai/problem-tasks/` | 创建命题任务（可指定参考题目）；未配置模型 400、题目不存在 404 |
+| `POST /api/ai/problem-tasks/` | 创建命题任务（可指定参考题目；DeepSeek 支持三档模式）；未配置模型 400、题目不存在 404 |
 | `GET /api/ai/problem-tasks/` | 任务列表（等价扩展：本人任务，管理员全部；不含 result） |
 | `GET /api/ai/problem-tasks/{id}` | 任务状态：status/progress/result/usage（创建者或管理员） |
 | `GET /api/ai/problem-tasks/{id}/events` | SSE 实时进度（同时支持轮询状态接口） |
@@ -161,6 +161,8 @@ models   →  数据结构（ORM / 文件）
 - AI 模型 URL 可填写完整 chat/completions 地址，或域名 / `/v1` 基地址（自动补全端点）；不接受把密钥放进 URL。
 - 模型网络默认直连，避免遗留的 `HTTP_PROXY` / `HTTPS_PROXY` 导致连接失败；部署确实依赖系统代理时设置 `OJ_AI_TRUST_ENV=1` 并重启。
 - 模型配置增加 `currency`（默认 CNY，可选 USD）；每个任务固定创建时的 URL、模型、密钥和价格。
+- DeepSeek 官方接口提供三档命题模式：极速使用 V4 Flash 并关闭思考，均衡使用 V4 Flash + low，
+  高质量使用 V4 Pro + high；其他 OpenAI 兼容提供商继续使用原自定义模型，不发送 DeepSeek 专有参数。
 - 失败任务可从详情页重新开始；新任务使用当前最新配置，原失败记录和已发生费用不会被覆盖。
 - 重试累计每次调用的 Token 与费用，`usage.calls` 保留明细；模型返回后即保存用量，题目校验失败也不会丢失账单信息。
 - 返回前被中断或网络失败的调用可能没有完整用量，页面显示未知，不把未知当作零费用。
