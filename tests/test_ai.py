@@ -69,7 +69,7 @@ def test_reasoning_model_timeout_has_safe_default():
 
 
 def test_generation_mode_column_migrates_existing_database(tmp_path):
-    """旧数据库保留全部任务，并幂等补充 generation_mode 字段。"""
+    """旧数据库保留全部任务，并幂等补充 AI 版本字段。"""
     from app.database import _migrate_columns
 
     db_engine = create_engine(f"sqlite:///{tmp_path / 'legacy.db'}")
@@ -84,7 +84,7 @@ def test_generation_mode_column_migrates_existing_database(tmp_path):
         count = conn.execute(text("SELECT COUNT(*) FROM ai_tasks")).scalar_one()
     db_engine.dispose()
 
-    assert "generation_mode" in columns
+    assert {"generation_mode", "parent_task_id"} <= columns
     assert count == 1
 
 
@@ -198,6 +198,18 @@ async def test_deepseek_generation_modes_select_model_and_reasoning(client, monk
         assert ("temperature" in payload) is (thinking == "disabled")
         assert "max_tokens" not in payload
 
+    # 后续对话可以为这一轮单独切换档位。
+    parent_id = task["task_id"]
+    resp = await client.post(f"/api/ai/problem-tasks/{parent_id}/refine", json={
+        "requirement": "改成更快生成的版本",
+        "generation_mode": "fast",
+    })
+    refined = await _wait_task(client, resp.json()["data"]["task_id"])
+    assert refined["parent_task_id"] == parent_id
+    assert refined["generation_mode"] == "fast"
+    assert refined["model"] == "deepseek-v4-flash"
+    assert payloads[-1]["thinking"] == {"type": "disabled"}
+
 
 async def test_generation_modes_do_not_change_custom_provider(client, monkeypatch):
     """旧客户端不传模式时行为不变；自定义提供商不会收到 DeepSeek 参数。"""
@@ -233,6 +245,100 @@ async def test_generation_modes_do_not_change_custom_provider(client, monkeypatc
         "generation_mode": "turbo",
     })
     assert resp.status_code == 400
+
+
+async def test_refine_supports_multi_turn_versions_without_overwriting(client, monkeypatch):
+    """用户可连续修改，模型始终基于上一版，所有历史版本保持可回看。"""
+    import app.services.ai_service as svc
+
+    await _config(client)
+    _mock_model(monkeypatch)
+    resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "出一道入门题"})
+    root = await _wait_task(client, resp.json()["data"]["task_id"])
+    root_result = json.loads(json.dumps(root["result"], ensure_ascii=False))
+
+    generated_versions = [
+        {**GENERATED, "id": "9998", "title": "更简洁的题目", "difficulty": "中等"},
+        {**GENERATED, "id": "9999", "title": "增加边界样例的题目", "difficulty": "中等"},
+    ]
+    prompts = []
+
+    async def fake(_cfg, payload):
+        prompts.append(payload["messages"][1]["content"])
+        content = generated_versions[len(prompts) - 1]
+        return {
+            "choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}],
+            "usage": FAKE_USAGE,
+        }
+
+    monkeypatch.setattr(svc, "_request_model", fake)
+    resp = await client.post(f"/api/ai/problem-tasks/{root['task_id']}/refine", json={
+        "requirement": "题面简洁一些，难度改成中等",
+    })
+    version2 = await _wait_task(client, resp.json()["data"]["task_id"])
+    assert version2["parent_task_id"] == root["task_id"]
+    assert version2["result"]["id"] == root_result["id"]
+    assert version2["result"]["title"] == "更简洁的题目"
+    assert "本轮修改要求：题面简洁一些" in prompts[0]
+    assert root_result["title"] in prompts[0]
+
+    resp = await client.post(f"/api/ai/problem-tasks/{version2['task_id']}/refine", json={
+        "requirement": "再增加边界样例",
+    })
+    version3 = await _wait_task(client, resp.json()["data"]["task_id"])
+    assert version3["parent_task_id"] == version2["task_id"]
+    assert version3["result"]["id"] == root_result["id"]
+    assert version3["result"]["title"] == "增加边界样例的题目"
+    assert "本轮修改要求：再增加边界样例" in prompts[1]
+    assert version2["result"]["title"] in prompts[1]
+
+    conversation = (await client.get(
+        f"/api/ai/problem-tasks/{version3['task_id']}/conversation"
+    )).json()["data"]
+    assert [turn["task_id"] for turn in conversation] == [
+        root["task_id"], version2["task_id"], version3["task_id"],
+    ]
+    assert [turn["parent_task_id"] for turn in conversation] == [
+        None, root["task_id"], version2["task_id"],
+    ]
+    assert "result" not in conversation[0] and "usage" not in conversation[0]
+    assert conversation[-1]["result_title"] == "增加边界样例的题目"
+
+    # 原版本未被覆盖。
+    root_after = (await client.get(
+        f"/api/ai/problem-tasks/{root['task_id']}"
+    )).json()["data"]
+    assert root_after["result"] == root_result
+
+    # 其他普通用户既不能继续修改，也不能读取版本链。
+    await client.post("/api/users/", json={"username": "mallory", "password": "pw123456"})
+    await login(client, "mallory", "pw123456")
+    assert (await client.post(f"/api/ai/problem-tasks/{version3['task_id']}/refine", json={
+        "requirement": "越权修改",
+    })).status_code == 403
+    assert (await client.get(
+        f"/api/ai/problem-tasks/{version3['task_id']}/conversation"
+    )).status_code == 403
+
+
+async def test_refine_rejects_missing_unfinished_and_invalid_requests(client, monkeypatch):
+    await _config(client)
+    _mock_model(monkeypatch, delay=10)
+    resp = await client.post("/api/ai/problem-tasks/", json={"requirement": "慢任务"})
+    task_id = resp.json()["data"]["task_id"]
+    assert (await client.post(f"/api/ai/problem-tasks/{task_id}/refine", json={
+        "requirement": "现在修改",
+    })).status_code == 409
+    assert (await client.post(f"/api/ai/problem-tasks/{task_id}/refine", json={
+        "requirement": "   ",
+    })).status_code == 400
+    assert (await client.post("/api/ai/problem-tasks/99999/refine", json={
+        "requirement": "修改",
+    })).status_code == 404
+    assert (await client.get(
+        "/api/ai/problem-tasks/99999/conversation"
+    )).status_code == 404
+    assert (await client.put(f"/api/ai/problem-tasks/{task_id}/cancel")).status_code == 200
 
 
 async def test_get_config_unconfigured_and_events_guards(client):

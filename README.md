@@ -135,6 +135,8 @@ models   →  数据结构（ORM / 文件）
 | `GET /api/ai/problem-tasks/{id}/events` | SSE 实时进度（同时支持轮询状态接口） |
 | `PUT /api/ai/problem-tasks/{id}/cancel` | 真正终止后台任务；已结束 409 |
 | `POST /api/ai/problem-tasks/{id}/retry` | 从失败记录创建新任务，保留原错误与用量 |
+| `POST /api/ai/problem-tasks/{id}/refine` | 基于已完成结果继续对话修改，创建不可变的新版本 |
+| `GET /api/ai/problem-tasks/{id}/conversation` | 查询从初稿到当前版本的对话修改链 |
 
 设计要点：
 
@@ -164,6 +166,8 @@ models   →  数据结构（ORM / 文件）
 - DeepSeek 官方接口提供三档命题模式：极速使用 V4 Flash 并关闭思考，均衡使用 V4 Flash + low，
   高质量使用 V4 Pro + high；其他 OpenAI 兼容提供商继续使用原自定义模型，不发送 DeepSeek 专有参数。
 - 失败任务可从详情页重新开始；新任务使用当前最新配置，原失败记录和已发生费用不会被覆盖。
+- 已完成的题目可继续输入修改意见；每轮都以上一版完整题目为上下文并创建新任务，保持题目 ID，
+  原结果、修改要求、档位和费用均保留，可反复修改并回看任意历史版本。
 - 重试累计每次调用的 Token 与费用，`usage.calls` 保留明细；模型返回后即保存用量，题目校验失败也不会丢失账单信息。
 - 返回前被中断或网络失败的调用可能没有完整用量，页面显示未知，不把未知当作零费用。
 - 生成题目提供 JSON 审阅编辑及实际测试点输入输出预览；改编任务保持原题 id，日志公开策略由管理员维护。

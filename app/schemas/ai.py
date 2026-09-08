@@ -52,3 +52,18 @@ class AiTaskIn(BaseModel):
         if not value.strip():
             raise ValueError("requirement must not be blank")
         return value.strip()
+
+
+class AiRefineIn(BaseModel):
+    requirement: str = Field(min_length=1, description="对上一版题目的修改要求")
+    generation_mode: Literal["fast", "balanced", "quality"] | None = Field(
+        default=None,
+        description="本轮使用的 DeepSeek 命题模式；不传时沿用上一版",
+    )
+
+    @field_validator("requirement")
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError("requirement must not be blank")
+        return value.strip()

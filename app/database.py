@@ -38,6 +38,8 @@ def _migrate_columns(conn) -> None:
     columns = {column["name"] for column in inspect(conn).get_columns("ai_tasks")}
     if "generation_mode" not in columns:
         conn.execute(text("ALTER TABLE ai_tasks ADD COLUMN generation_mode VARCHAR(16)"))
+    if "parent_task_id" not in columns:
+        conn.execute(text("ALTER TABLE ai_tasks ADD COLUMN parent_task_id INTEGER"))
 
 
 async def get_db():

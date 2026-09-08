@@ -33,7 +33,7 @@ from app import config
 from app.core.errors import ApiError
 from app.database import SessionLocal
 from app.models import AiTask, User
-from app.schemas.ai import AiTaskIn, ModelConfigIn
+from app.schemas.ai import AiRefineIn, AiTaskIn, ModelConfigIn
 from app.schemas.problem import ProblemConfig
 from app.services.problem_store import store
 
@@ -199,13 +199,18 @@ def apply_generation_mode(cfg: dict, mode: str | None) -> dict:
 
 # ---- 提示词与结果解析 ----
 
-def build_prompt(requirement: str, reference: dict | None) -> str:
-    parts = [f"命题需求：{requirement}"]
+def build_prompt(requirement: str, reference: dict | None, *, revision: bool = False) -> str:
+    heading = "本轮修改要求" if revision else "命题需求"
+    parts = [f"{heading}：{requirement}"]
     if reference:
-        parts.append(
-            "以下是一道已有题目，请在保持其 id 不变的基础上按要求修改/改编：\n"
-            + json.dumps(reference, ensure_ascii=False, indent=2)
-        )
+        if revision:
+            instruction = (
+                "以下是对话中的上一版题目。请严格基于它完成本轮修改，未要求变动的内容保持不变；"
+                "修正修改引起的题面、输入输出、约束、样例和测试点之间的不一致，并保持 id 不变：\n"
+            )
+        else:
+            instruction = "以下是一道已有题目，请在保持其 id 不变的基础上按要求修改/改编：\n"
+        parts.append(instruction + json.dumps(reference, ensure_ascii=False, indent=2))
     return "\n\n".join(parts)
 
 
@@ -425,6 +430,7 @@ def _serialize(t: AiTask) -> dict:
         "provider_url": t.provider_url,
         "model": t.model,
         "generation_mode": t.generation_mode,
+        "parent_task_id": t.parent_task_id,
         "created_at": t.created_at.strftime("%Y-%m-%d %H:%M:%S") if t.created_at else None,
     }
 
@@ -459,15 +465,27 @@ async def _run_task(task_id: int, cfg: dict | None = None) -> None:
             t = await db.get(AiTask, task_id)
             if t is None or task_id in _cancelled:
                 return
-            requirement, problem_id = t.requirement, t.problem_id
+            requirement, problem_id, parent_task_id = (
+                t.requirement, t.problem_id, t.parent_task_id,
+            )
         await _progress(task_id, 0.05, "任务开始")
 
         cfg = cfg or await config_store.load()
         if cfg is None:
             raise RuntimeError("model config not set")
 
-        reference = await store.get(problem_id) if problem_id else None
-        prompt = build_prompt(requirement, reference)
+        reference = None
+        target_id = problem_id
+        if parent_task_id is not None:
+            async with SessionLocal() as db:
+                parent = await db.get(AiTask, parent_task_id)
+                if parent is None or parent.status != STATUS_DONE or not isinstance(parent.result, dict):
+                    raise RuntimeError("previous AI problem version is unavailable")
+                reference = parent.result
+                target_id = str(reference.get("id") or problem_id or "") or None
+        elif problem_id:
+            reference = await store.get(problem_id)
+        prompt = build_prompt(requirement, reference, revision=parent_task_id is not None)
 
         await _progress(task_id, 0.15, "正在调用模型…")
         # 模型调用期间每 2s 推送一次进度（advance.md R3：
@@ -499,8 +517,8 @@ async def _run_task(task_id: int, cfg: dict | None = None) -> None:
 
         await _progress(task_id, 0.7, "模型已返回，正在解析校验…")
         problem = parse_problem(content.replace(cfg["api_key"], "***"))
-        if problem_id:
-            problem["id"] = problem_id
+        if target_id:
+            problem["id"] = target_id
 
         await _progress(task_id, 0.9, "校验通过，正在保存结果…")
         if task_id in _cancelled:
@@ -569,6 +587,7 @@ async def _enqueue_task(
     problem_id: str | None,
     cfg: dict,
     generation_mode: str | None = None,
+    parent_task_id: int | None = None,
 ) -> AiTask:
     """创建一条新任务并调度执行；新建和失败重试共用此路径。"""
     async with SessionLocal() as db:
@@ -577,6 +596,7 @@ async def _enqueue_task(
             status=STATUS_PENDING, progress=0.0,
             provider_url=cfg["provider_url"], model=cfg["model"],
             generation_mode=generation_mode,
+            parent_task_id=parent_task_id,
         )
         db.add(task)
         await db.commit()
@@ -602,6 +622,7 @@ async def retry_task(user: User, task_id: int) -> AiTask:
         requirement = source.requirement
         problem_id = source.problem_id
         generation_mode = source.generation_mode
+        parent_task_id = source.parent_task_id
 
     cfg = await config_store.load()
     if cfg is None:
@@ -613,11 +634,73 @@ async def retry_task(user: User, task_id: int) -> AiTask:
             if exc.status == 404:
                 raise ApiError(404, "problem not found")
             raise
-    # 新版任务沿用原模式；旧任务在 DeepSeek 官方接口下默认使用均衡模式。
-    if generation_mode is None and supports_generation_modes(cfg):
-        generation_mode = "balanced"
+    # DeepSeek 沿用原档位（旧任务取均衡）；切换到自定义提供商时回到其原模型。
+    if supports_generation_modes(cfg):
+        generation_mode = generation_mode or "balanced"
+    else:
+        generation_mode = None
     cfg = apply_generation_mode(cfg, generation_mode)
-    return await _enqueue_task(owner_id, requirement, problem_id, cfg, generation_mode)
+    return await _enqueue_task(
+        owner_id, requirement, problem_id, cfg, generation_mode, parent_task_id,
+    )
+
+
+async def refine_task(user: User, task_id: int, body: AiRefineIn) -> AiTask:
+    """基于已完成任务创建下一版，不覆盖任何历史版本。"""
+    async with SessionLocal() as db:
+        source = await db.get(AiTask, task_id)
+        if source is None:
+            raise ApiError(404, "task not found")
+        if user.role != "admin" and source.user_id != user.id:
+            raise ApiError(403, "permission denied")
+        if source.status != STATUS_DONE or not isinstance(source.result, dict):
+            raise ApiError(409, "only completed tasks can be refined")
+        owner_id = source.user_id
+        problem_id = source.problem_id
+        previous_mode = source.generation_mode
+
+    cfg = await config_store.load()
+    if cfg is None:
+        raise ApiError(400, "model config not set")
+    if supports_generation_modes(cfg):
+        generation_mode = body.generation_mode or previous_mode or "balanced"
+    else:
+        generation_mode = body.generation_mode
+    cfg = apply_generation_mode(cfg, generation_mode)
+    return await _enqueue_task(
+        owner_id,
+        body.requirement,
+        problem_id,
+        cfg,
+        generation_mode,
+        parent_task_id=task_id,
+    )
+
+
+async def get_conversation(user: User, task_id: int) -> list[dict]:
+    """返回从初始命题到当前版本的对话链摘要。"""
+    async with SessionLocal() as db:
+        current = await db.get(AiTask, task_id)
+        if current is None:
+            raise ApiError(404, "task not found")
+        if user.role != "admin" and current.user_id != user.id:
+            raise ApiError(403, "permission denied")
+
+        chain = []
+        seen = set()
+        while current is not None and current.id not in seen:
+            seen.add(current.id)
+            item = _serialize(current)
+            result = item.pop("result", None)
+            item.pop("usage", None)
+            item["result_title"] = result.get("title") if isinstance(result, dict) else None
+            chain.append(item)
+            current = (
+                await db.get(AiTask, current.parent_task_id)
+                if current.parent_task_id is not None else None
+            )
+        chain.reverse()
+        return chain
 
 
 async def list_tasks(user: User, limit: int = 50) -> list[dict]:

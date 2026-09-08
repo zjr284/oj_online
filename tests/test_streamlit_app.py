@@ -192,6 +192,23 @@ def _fake_api(monkeypatch, state):
                 'generation_mode': state.get('ai_task_request', {}).get('generation_mode'),
                 'result': None, 'usage': None,
             }
+        elif path == '/api/ai/problem-tasks/7/conversation':
+            data = state.get('ai_conversation', [])
+        elif path == '/api/ai/problem-tasks/7/refine' and method == 'POST':
+            state['ai_refine_request'] = kwargs['json']
+            data = {
+                'task_id': 22, 'status': 'pending', 'parent_task_id': 7,
+                'generation_mode': kwargs['json'].get('generation_mode'),
+            }
+        elif path == '/api/ai/problem-tasks/22/conversation':
+            data = state.get('ai_conversation', [])
+        elif path == '/api/ai/problem-tasks/22':
+            data = {
+                'task_id': 22, 'status': 'pending', 'progress': 0,
+                'requirement': '增加边界样例', 'model': 'deepseek-v4-flash',
+                'generation_mode': state.get('ai_refine_request', {}).get('generation_mode'),
+                'parent_task_id': 7, 'result': None, 'usage': None,
+            }
         elif path == '/api/ai/problem-tasks/7/cancel':
             state['status'] = 'cancelled'
             data = {'task_id': 7, 'status': 'cancelled'}
@@ -206,6 +223,8 @@ def _fake_api(monkeypatch, state):
             from test_ai import GENERATED
             data = {'task_id': 7, 'status': state.get('status', 'running'), 'progress': 0.4,
                     'requirement': '测试命题', 'model': 'example', 'result': GENERATED,
+                    'generation_mode': state.get('generation_mode'),
+                    'parent_task_id': state.get('parent_task_id'),
                     'usage': {'input_tokens': 100, 'output_tokens': 20, 'total_tokens': 120,
                               'cost': 0.1, 'currency': 'CNY', 'price_source': 'provider'}}
         elif path == '/api/logs/access/':
@@ -261,6 +280,50 @@ def test_ai_deepseek_mode_is_sent_with_new_task(monkeypatch):
         'requirement': '出一道快速入门题',
         'problem_id': None,
         'generation_mode': 'fast',
+    }
+
+
+def test_ai_completed_result_can_start_next_conversation_turn(monkeypatch):
+    state = {
+        'status': 'done',
+        'generation_mode': 'balanced',
+        'parent_task_id': 6,
+        'ai_config': {
+            'provider_url': 'https://api.deepseek.com/chat/completions',
+            'model': 'deepseek-v4-flash', 'api_key_configured': True,
+            'input_price': None, 'output_price': None,
+            'price_unit': 1000000, 'currency': 'CNY',
+        },
+        'ai_conversation': [
+            {'task_id': 6, 'status': 'done', 'requirement': '出一道入门题',
+             'model': 'deepseek-v4-flash', 'generation_mode': 'balanced',
+             'parent_task_id': None, 'created_at': '2026-09-08 10:00:00',
+             'result_title': '第一版'},
+            {'task_id': 7, 'status': 'done', 'requirement': '题面简洁一些',
+             'model': 'deepseek-v4-flash', 'generation_mode': 'balanced',
+             'parent_task_id': 6, 'created_at': '2026-09-08 10:01:00',
+             'result_title': '第二版'},
+        ],
+    }
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
+    at.run()
+    _open_page(at, 'ai_task', task='7')
+
+    texts = (' '.join(str(item.value) for item in at.subheader)
+             + ' '.join(str(item.label) for item in at.expander))
+    assert '继续修改这道题' in texts
+    assert '修改记录（2 轮）' in texts
+    next(item for item in at.text_area if item.label == '本轮修改要求').set_value('增加边界样例')
+    mode = next(item for item in at.radio if item.label == '生成模式')
+    mode.set_value('quality')
+    next(item for item in at.button if item.label == '✨ 生成下一版').click().run()
+
+    assert not at.exception
+    assert state['ai_refine_request'] == {
+        'requirement': '增加边界样例',
+        'generation_mode': 'quality',
     }
 
 

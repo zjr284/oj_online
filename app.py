@@ -84,7 +84,7 @@ def _clear_session(*, clear_browser_cookie: bool = True):
     for key in ("me", "cookies", "prob_view", "prob_id",
                 "sub_view", "sub_id", "confirm_delete",
                 "ai_view", "ai_task_id", "audit_user", "audit_username",
-                "ai_retry_notice", "audit_problem", "audit_page",
+                "ai_retry_notice", "ai_refine_notice", "audit_problem", "audit_page",
                 "audit_confirm_delete", "audit_flash"):
         st.session_state.pop(key, None)
     st.session_state.pop("_session_restore_error", None)
@@ -437,6 +437,21 @@ def _ai_status_badge(status) -> str:
     return {"done": _badge("完成", "green"), "failed": _badge("失败", "red"),
             "running": _badge("执行中", "blue"), "cancelled": _badge("已中断", "gray"),
             "pending": _badge("等待中", "amber")}.get(s, _badge(s, "gray"))
+
+
+def _ai_mode_radio(*, current: str | None, disabled: bool, key: str):
+    options = list(AI_MODE_LABELS)
+    index = options.index(current) if current in options else 1
+    return st.radio(
+        "生成模式",
+        options,
+        index=index,
+        format_func=AI_MODE_LABELS.get,
+        horizontal=True,
+        disabled=disabled,
+        key=key,
+        help="DeepSeek 官方接口支持：极速适合常规题，均衡兼顾速度与推理，高质量适合困难题。",
+    )
 
 
 def _verdict_pill(result: str, count) -> str:
@@ -1433,6 +1448,81 @@ def _render_ai_result(result: dict, problem_id: str | None):
             friendly_error(e)
 
 
+def _render_ai_conversation(task_id: int):
+    """展示当前版本的完整对话链，并允许回看任意旧版本。"""
+    try:
+        turns = api("GET", f"/api/ai/problem-tasks/{task_id}/conversation") or []
+    except ApiError:
+        return
+    if len(turns) <= 1:
+        return
+
+    with st.expander(f"💬 修改记录（{len(turns)} 轮）", expanded=False):
+        for index, turn in enumerate(turns, start=1):
+            turn_id = turn.get("task_id")
+            kind = "初始需求" if turn.get("parent_task_id") is None else "修改要求"
+            title = f" · {turn['result_title']}" if turn.get("result_title") else ""
+            st.markdown(f"**第 {index} 轮 · 任务 #{turn_id}{title}**")
+            st.write(f"{kind}：{turn.get('requirement') or '—'}")
+            st.caption(" · ".join(x for x in (
+                AI_MODE_LABELS.get(turn.get("generation_mode"), "自定义模型"),
+                f"状态 {turn.get('status') or '—'}",
+                turn.get("created_at") or "",
+            ) if x))
+            if turn_id != task_id and st.button(
+                "查看这一版", key=f"ai-conversation-{task_id}-{turn_id}",
+            ):
+                _go("ai_task", task=turn_id)
+
+
+def _render_ai_refine(task: dict):
+    """完成结果后的连续修改入口；每轮都创建不可变的新版本。"""
+    st.divider()
+    st.subheader("💬 继续修改这道题")
+    st.caption("描述不满意的地方即可生成下一版；当前版本不会被覆盖，可在修改记录中随时回看。")
+
+    cfg = {}
+    try:
+        cfg = api("GET", "/api/ai/model-config") or {}
+    except ApiError:
+        pass
+    supports_modes = bool(cfg.get("api_key_configured") and
+                          _supports_deepseek_modes(cfg.get("provider_url")))
+    task_id = int(task["task_id"])
+    with st.form(f"ai-refine-form-{task_id}"):
+        requirement = st.text_area(
+            "本轮修改要求",
+            placeholder="例如：题面再简洁一些，增加一组边界样例，并把难度调整为中等",
+            height=110,
+            key=f"ai-refine-requirement-{task_id}",
+        )
+        generation_mode = _ai_mode_radio(
+            current=task.get("generation_mode"),
+            disabled=not supports_modes,
+            key=f"ai-refine-mode-{task_id}",
+        )
+        if not supports_modes:
+            st.caption("当前提供商将继续使用模型配置中的自定义模型。")
+        submitted = st.form_submit_button("✨ 生成下一版", type="primary", width="stretch")
+    if not submitted:
+        return
+    if not requirement.strip():
+        st.error("请输入本轮修改要求。")
+        return
+    try:
+        next_task = api("POST", f"/api/ai/problem-tasks/{task_id}/refine", json={
+            "requirement": requirement.strip(),
+            "generation_mode": generation_mode if supports_modes else None,
+        })
+    except ApiError as exc:
+        friendly_error(exc)
+        return
+    st.session_state["ai_refine_notice"] = (
+        f"已基于任务 #{task_id} 创建下一版任务 #{next_task['task_id']}。"
+    )
+    _go("ai_task", task=next_task["task_id"])
+
+
 @st.fragment(run_every=1.5)
 def _ai_task_detail():
     tid = st.session_state.get("ai_task_id")
@@ -1447,12 +1537,15 @@ def _ai_task_detail():
     st.title(f"AI 命题任务 #{tid}")
     if notice := st.session_state.pop("ai_retry_notice", None):
         st.success(notice)
+    if notice := st.session_state.pop("ai_refine_notice", None):
+        st.success(notice)
     st.caption(" · ".join(x for x in (
         d.get("requirement", ""), f"改编自 {d['problem_id']}" if d.get("problem_id") else "",
         AI_MODE_LABELS.get(d.get("generation_mode"), ""),
         f"模型 {d.get('model') or '—'}", f"创建于 {d.get('created_at') or '—'}") if x))
     st.markdown(f"### {_ai_status_badge(status)}", unsafe_allow_html=True)
     st.progress(min(float(d.get("progress") or 0), 1.0))
+    _render_ai_conversation(int(tid))
 
     if status in ("pending", "running"):
         # 每秒自动刷新实现实时进度（R3）；页面不阻塞，「中断任务」可随时点击
@@ -1470,6 +1563,7 @@ def _ai_task_detail():
 
     if status == "done" and d.get("result"):
         _render_ai_result(d["result"], d.get("problem_id"))
+        _render_ai_refine(d)
     elif status == "failed":
         st.error((d.get("result") or {}).get("error") or "未知错误")
         st.caption("重新开始会使用当前最新模型配置创建新任务，原失败记录与已产生的用量会保留。")
@@ -1594,14 +1688,10 @@ def _ai_home():
                            format_func=lambda x: x or "— 新题目 —")
         supports_modes = bool(cfg.get("api_key_configured") and
                               _supports_deepseek_modes(cfg.get("provider_url")))
-        generation_mode = st.radio(
-            "生成模式",
-            list(AI_MODE_LABELS),
-            index=1,
-            format_func=AI_MODE_LABELS.get,
-            horizontal=True,
+        generation_mode = _ai_mode_radio(
+            current="balanced",
             disabled=not supports_modes,
-            help="DeepSeek 官方接口支持：极速适合常规题，均衡兼顾速度与推理，高质量适合困难题。",
+            key="ai-new-task-mode",
         )
         if not supports_modes:
             st.caption("三档模式需要先配置 DeepSeek 官方 API；其他提供商继续使用已配置的自定义模型。")

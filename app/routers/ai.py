@@ -8,6 +8,8 @@
 - GET  /api/ai/problem-tasks/{task_id}/events   SSE 进度事件（创建者或管理员）
 - PUT  /api/ai/problem-tasks/{task_id}/cancel   取消任务（真正终止后台执行；已结束 409）
 - POST /api/ai/problem-tasks/{task_id}/retry    从失败记录创建新任务
+- POST /api/ai/problem-tasks/{task_id}/refine   基于完成结果继续对话修改
+- GET  /api/ai/problem-tasks/{task_id}/conversation  查询版本化对话链
 
 安全要求（api.md）：api_key 不得经任何接口返回；费用公式与用量统计见
 app/services/ai_service.py（模型不返回用量时按字符数估算并标注 estimated）。
@@ -20,7 +22,7 @@ from fastapi.responses import StreamingResponse
 from app.core.deps import get_current_user
 from app.core.errors import ApiError, ok
 from app.models import User
-from app.schemas.ai import AiTaskIn, ModelConfigIn
+from app.schemas.ai import AiRefineIn, AiTaskIn, ModelConfigIn
 from app.services import ai_service
 
 router = APIRouter(route_class=AuthenticatedRoute, prefix="/api/ai", tags=["ai"])
@@ -105,3 +107,28 @@ async def retry_problem_task(task_id: int, user: User = Depends(get_current_user
         "status": task.status,
         "retried_from": task_id,
     }, msg="task restarted")
+
+
+@router.post("/problem-tasks/{task_id}/refine")
+async def refine_problem_task(
+    task_id: int,
+    body: AiRefineIn,
+    user: User = Depends(get_current_user),
+):
+    """基于已完成题目继续修改；新建版本，原结果保持不变。"""
+    task = await ai_service.refine_task(user, task_id, body)
+    return ok({
+        "task_id": task.id,
+        "status": task.status,
+        "parent_task_id": task_id,
+        "generation_mode": task.generation_mode,
+    }, msg="refinement started")
+
+
+@router.get("/problem-tasks/{task_id}/conversation")
+async def get_problem_task_conversation(
+    task_id: int,
+    user: User = Depends(get_current_user),
+):
+    """返回当前版本的完整祖先链摘要。"""
+    return ok(await ai_service.get_conversation(user, task_id))

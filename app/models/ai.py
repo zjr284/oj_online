@@ -27,5 +27,7 @@ class AiTask(Base):
     provider_url: Mapped[str | None] = mapped_column(String(256), nullable=True)
     model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     generation_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # 连续修改采用不可变版本链；父任务保存上一版完整题目。
+    parent_task_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
