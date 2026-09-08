@@ -141,7 +141,7 @@ models   →  数据结构（ORM / 文件）
 设计要点：
 
 - **R1 交互衔接**：前端 AI 命题页提交需求 → 实时进度 → 预览生成的题目 →
-  经已有的 `POST/PUT /api/problems/` 接口导入题库，AI 模块本身不直接写题库，与基础功能解耦；
+  经已有的 `POST/PUT /api/problems/` 接口导入题库；“保存为新题目”遇到重复题号时由服务端安全分配新题号，AI 模块本身不直接写题库，与基础功能解耦；
 - **R2 可配置**：provider_url/model/api_key 均通过接口配置（OpenAI 兼容 chat/completions 协议，
   不写死厂商）；api_key 用 Fernet 加密存 `data/ai_config.json`（密钥文件 600 权限），
   任何接口/日志/错误信息都不泄露密钥；

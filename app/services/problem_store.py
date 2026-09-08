@@ -135,18 +135,59 @@ class ProblemStore:
 
         return await self._locked(_read)
 
-    async def create(self, cfg: ProblemConfig) -> None:
-        def _write() -> None:
-            self.base_dir.mkdir(parents=True, exist_ok=True)
-            path = self._path(cfg.id)
-            try:
-                # "x" 独占创建：并发提交同一 id 时恰好一个成功，其余稳定返回 409
-                with open(path, "x", encoding="utf-8") as f:
-                    f.write(self._dumps(cfg))
-            except FileExistsError:
-                raise ApiError(409, "problem already exists")
+    async def create(self, cfg: ProblemConfig, *, assign_new_id: bool = False) -> str:
+        """创建题目并返回实际题号。
 
-        await self._locked(_write)
+        普通创建保持严格判重；AI 导入等明确的“另存为新题目”场景可启用
+        ``assign_new_id``，在请求题号已占用时原子选择后续可用数字题号。
+        """
+        def _write() -> str:
+            self.base_dir.mkdir(parents=True, exist_ok=True)
+            requested_id = cfg.id
+            max_problem_id = 10**18 - 1
+
+            while True:
+                requested_path = self.base_dir / f"{requested_id}.json"
+                if not requested_path.exists() and not requested_path.is_symlink():
+                    candidate_id = requested_id
+                elif not assign_new_id:
+                    candidate_id = requested_id
+                else:
+                    # 从原题号的下一个编号开始找。最多检查“现有文件数 + 1”个
+                    # 连续编号就必然能找到空位，无需扫描整个 18 位编号空间。
+                    occupied = {
+                        path.stem
+                        for path in self.base_dir.glob("*.json")
+                        if re.fullmatch(PROBLEM_ID_RE, path.stem)
+                    }
+                    start = (int(requested_id) + 1) % (max_problem_id + 1)
+                    candidate_id = ""
+                    for offset in range(len(occupied) + 1):
+                        value = (start + offset) % (max_problem_id + 1)
+                        possible = str(value)
+                        possible_path = self.base_dir / f"{possible}.json"
+                        if (possible not in occupied and not possible_path.exists()
+                                and not possible_path.is_symlink()):
+                            candidate_id = possible
+                            break
+                    if not candidate_id:  # 实际文件系统中不可达，保留明确错误兜底。
+                        raise ApiError(409, "no available problem id")
+
+                saved = (cfg if candidate_id == cfg.id
+                         else cfg.model_copy(update={"id": candidate_id}))
+                path = self._path(candidate_id)
+                try:
+                    # "x" 独占创建：即使存在多进程竞争也绝不覆盖已有题目。
+                    with open(path, "x", encoding="utf-8") as f:
+                        f.write(self._dumps(saved))
+                    return candidate_id
+                except FileExistsError:
+                    if not assign_new_id:
+                        raise ApiError(409, "problem already exists")
+                    # 另一个进程刚占用了候选题号，以下一编号重新分配。
+                    requested_id = str((int(candidate_id) + 1) % (max_problem_id + 1))
+
+        return await self._locked(_write)
 
     async def update(self, cfg: ProblemConfig, *, allow_visibility: bool = True) -> None:
         def _write() -> None:

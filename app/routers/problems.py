@@ -2,7 +2,8 @@
 
 接口与 api.md 一致：
 - GET    /api/problems/                       题目列表（登录用户）
-- POST   /api/problems/                       添加题目（登录用户，id 冲突 409）
+- POST   /api/problems/                       添加题目（登录用户，id 冲突 409；
+                                               assign_new_id=true 时自动分配新题号）
 - GET    /api/problems/{problem_id}           题目详情（登录用户）
 - PUT    /api/problems/{problem_id}           覆盖更新（登录用户，body.id 须与路径一致）
 - DELETE /api/problems/{problem_id}           删除（仅管理员）
@@ -39,11 +40,13 @@ async def list_problems(user: User = Depends(get_current_user)):
 
 @router.post("")
 @router.post("/")
-async def create_problem(cfg: ProblemConfig, user: User = Depends(get_current_user)):
+async def create_problem(cfg: ProblemConfig,
+                         assign_new_id: bool = False,
+                         user: User = Depends(get_current_user)):
     if cfg.public_cases and user.role != "admin":
         raise ApiError(403, "admin permission required to change log visibility")
-    await store.create(cfg)
-    return ok({"id": cfg.id}, msg="add success")
+    saved_id = await store.create(cfg, assign_new_id=assign_new_id)
+    return ok({"id": saved_id}, msg="add success")
 
 
 @router.get("/{problem_id}")

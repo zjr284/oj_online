@@ -443,6 +443,51 @@ async def test_concurrent_create_same_id(client):
     assert raw["id"] == "4001" and raw["title"] == PROBLEM["title"]
 
 
+async def test_create_as_new_assigns_unique_ids_without_overwriting(client):
+    """连续保存同一 AI 结果时，每一版都分配新题号且旧题保持不变。"""
+    await login(client, "admin", "admintestpassword")
+
+    first = await client.post(
+        "/api/problems/?assign_new_id=true",
+        json={**PROBLEM, "id": "2001", "title": "第一版"},
+    )
+    second = await client.post(
+        "/api/problems/?assign_new_id=true",
+        json={**PROBLEM, "id": "2001", "title": "第二版"},
+    )
+    third = await client.post(
+        "/api/problems/?assign_new_id=true",
+        json={**PROBLEM, "id": "2001", "title": "第三版"},
+    )
+
+    assert [first.status_code, second.status_code, third.status_code] == [200, 200, 200]
+    assert [response.json()["data"]["id"] for response in (first, second, third)] == [
+        "2001", "2002", "2003",
+    ]
+    assert (await client.get("/api/problems/2001")).json()["data"]["title"] == "第一版"
+    assert (await client.get("/api/problems/2002")).json()["data"]["title"] == "第二版"
+    assert (await client.get("/api/problems/2003")).json()["data"]["title"] == "第三版"
+
+
+async def test_concurrent_create_as_new_never_reuses_an_id(client):
+    """并发另存为新题目也必须全部成功并获得不同题号。"""
+    await login(client, "admin", "admintestpassword")
+    responses = await asyncio.gather(*[
+        client.post(
+            "/api/problems/?assign_new_id=true",
+            json={**PROBLEM, "id": "5001", "title": f"版本 {index}"},
+        )
+        for index in range(5)
+    ])
+
+    assert all(response.status_code == 200 for response in responses)
+    ids = [response.json()["data"]["id"] for response in responses]
+    assert len(set(ids)) == 5
+    for response, problem_id in zip(responses, ids):
+        saved = (await client.get(f"/api/problems/{problem_id}")).json()["data"]
+        assert saved["id"] == problem_id
+
+
 async def test_corrupted_file_tolerance(client):
     """目录中存在损坏 JSON：列表跳过它，其余题目不受影响；读取损坏配置 → 500。"""
     await login(client, "admin", "admintestpassword")

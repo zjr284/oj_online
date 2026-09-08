@@ -146,6 +146,14 @@ def _fake_api(monkeypatch, state):
             headers = {'set-cookie': 'oj_session=private-session-token; HttpOnly; Path=/'}
         elif path == '/api/auth/me':
             data = {'username': state.get('username', 'alice'), 'user_id': '2', 'role': 'user'}
+        elif path == '/api/problems/' and method == 'POST':
+            assigned_id = str(state.get('assigned_problem_id', kwargs['json']['id']))
+            state['problem_create_params'] = kwargs.get('params')
+            state['saved_problem'] = {**kwargs['json'], 'id': assigned_id}
+            data = {'id': assigned_id}
+        elif (state.get('saved_problem')
+              and path == f"/api/problems/{state['saved_problem']['id']}"):
+            data = state['saved_problem']
         elif path == '/api/problems/':
             data = state.get('problems', [])
         elif path == '/api/problems/1001':
@@ -576,6 +584,28 @@ def test_ai_result_can_be_reviewed_before_import(monkeypatch):
     next(b for b in at.button if '保存为新题目' in b.label).click().run()
     assert not at.exception
     assert any('JSON 格式错误' in str(e.value) for e in at.error)
+
+
+def test_ai_revisions_save_with_server_assigned_id_and_open_that_problem(monkeypatch):
+    state = {'status': 'done', 'assigned_problem_id': '2002'}
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'root', 'user_id': '1', 'role': 'admin'}
+    at.run()
+    _open_page(at, 'ai_task', task='7')
+
+    next(button for button in at.button if '保存为新题目' in button.label).click().run()
+
+    assert not at.exception
+    create_request = next(
+        item for item in state['requests']
+        if item[0] == 'POST' and item[1] == '/api/problems/'
+    )
+    assert create_request[2]['id'] == '2001'
+    assert state['problem_create_params'] == {'assign_new_id': True}
+    assert state['saved_problem']['id'] == '2002'
+    route_problem = at.query_params['problem']
+    assert route_problem == '2002' or route_problem == ['2002']
 
 
 def test_submission_shows_partial_score_and_successful_compile(monkeypatch):

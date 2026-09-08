@@ -1436,14 +1436,25 @@ def _render_ai_result(result: dict, problem_id: str | None):
             st.error("题目 JSON 格式错误，请检查后再保存。")
             return
         try:
+            saved_id = problem_id
             if problem_id:
                 api("PUT", f"/api/problems/{problem_id}", json=result)
                 st.success(f"已保存修改到题目 {problem_id}。")
             else:
-                new_id = api("POST", "/api/problems/", json=result)["id"]
-                st.success(f"已保存为新题目 {new_id}。")
+                requested_id = str(result.get("id") or "")
+                saved_id = str(api(
+                    "POST", "/api/problems/", json=result,
+                    params={"assign_new_id": True},
+                )["id"])
+                if saved_id == requested_id:
+                    st.success(f"已保存为新题目 {saved_id}。")
+                else:
+                    st.success(
+                        f"题号 {requested_id} 已存在，已自动分配新题号 "
+                        f"{saved_id} 并保存。"
+                    )
             time.sleep(0.4)
-            _go("problem_detail", problem=problem_id or result.get("id"))
+            _go("problem_detail", problem=saved_id)
         except ApiError as e:
             friendly_error(e)
 
