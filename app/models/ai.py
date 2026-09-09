@@ -12,6 +12,7 @@ from app.database import Base
 
 
 class AiTask(Base):
+    """持久化一轮 AI 命题或修改任务及其版本关系。"""
     __tablename__ = "ai_tasks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

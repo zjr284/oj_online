@@ -30,6 +30,7 @@ async def login(
     response: Response,
     db: AsyncSession = Depends(get_db),
 ):
+    """校验账户后创建服务端会话，并通过 HttpOnly Cookie 返回令牌。"""
     user = await db.scalar(select(User).where(User.username == body.username))
     if user is None or not await asyncio.to_thread(verify_password, body.password, user.password_hash):
         raise ApiError(401, "wrong username or password")
@@ -45,6 +46,7 @@ async def login(
 
 @router.post("/logout")
 async def logout(request: Request, response: Response, db: AsyncSession = Depends(get_db)):
+    """删除当前服务端会话并让浏览器过期对应 Cookie。"""
     token = request.cookies.get(SESSION_COOKIE)
     session = await db.get(Session, token) if token else None
     if session is None or session.expires_at < datetime.now():

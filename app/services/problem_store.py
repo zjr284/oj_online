@@ -30,10 +30,12 @@ class ProblemStore:
     """基于 JSON 文件的题目存储实现。"""
 
     def __init__(self, base_dir: Path | None = None):
+        """指定题库目录，并初始化保护同进程文件操作的可重入锁。"""
         self.base_dir = base_dir or config.PROBLEMS_DIR
         self._lock = threading.RLock()
 
     def _path(self, problem_id: str) -> Path:
+        """把已校验题号映射为题库 JSON 路径，并拒绝符号链接。"""
         if not re.fullmatch(PROBLEM_ID_RE, problem_id):
             raise ApiError(400, "invalid problem id")
         path = self.base_dir / f"{problem_id}.json"
@@ -42,17 +44,18 @@ class ProblemStore:
         return path
 
     async def _locked(self, operation):
+        """在线程中串行执行同步文件操作，避免阻塞异步路由。"""
         def run():
+            """在题库锁持有期间执行一次读取、写入或迁移操作。"""
             with self._lock:
                 return operation()
         return await asyncio.to_thread(run)
 
     async def migrate_safe_ids(self) -> dict[str, str]:
         """仅修复旧数据中的不安全题号，并返回需要同步的引用映射。
-
-        api.md 明确允许 P1001、sum_2 等字符串题号，合法字符串必须原样保留。
         """
         def _migrate() -> dict[str, str]:
+            """扫描旧题库，修正不安全或冲突的文件题号。"""
             self.base_dir.mkdir(parents=True, exist_ok=True)
             mapping: dict[str, str] = {}
             used = {
@@ -95,6 +98,7 @@ class ProblemStore:
     async def list_problems(self) -> list[dict]:
         """返回 [{id, title}]，供题目列表页使用。"""
         def _read() -> list[dict]:
+            """读取所有合法 JSON 的题号和标题，跳过损坏文件。"""
             self.base_dir.mkdir(parents=True, exist_ok=True)
             items: list[dict] = []
             paths = sorted(self.base_dir.glob("*.json"), key=_problem_sort_key)
@@ -112,6 +116,7 @@ class ProblemStore:
     async def get(self, problem_id: str, *, for_judge: bool = False) -> dict:
         """返回题目全字段；可选字段缺失时填充默认值。"""
         def _read() -> dict:
+            """加载、校验并按调用场景保留题目原始限制字段。"""
             path = self._path(problem_id)
             if not path.is_file():
                 raise ApiError(404, "problem not found")
@@ -140,6 +145,7 @@ class ProblemStore:
         ``assign_new_id``，在请求题号已占用时原子选择后续可用题号。
         """
         def _write() -> str:
+            """独占创建题目文件；另存模式下原子寻找未占用题号。"""
             self.base_dir.mkdir(parents=True, exist_ok=True)
             base_id = cfg.id
             max_problem_id = 10**18 - 1
@@ -176,7 +182,9 @@ class ProblemStore:
         return await self._locked(_write)
 
     async def update(self, cfg: ProblemConfig, *, allow_visibility: bool = True) -> None:
+        """覆盖已有题目，同时保护管理员维护的测试点公开设置。"""
         def _write() -> None:
+            """在锁内读取现有配置、检查权限字段并原子写回。"""
             path = self._path(cfg.id)
             if not path.is_file():
                 raise ApiError(404, "problem not found")
@@ -193,7 +201,9 @@ class ProblemStore:
         await self._locked(_write)
 
     async def delete(self, problem_id: str) -> None:
+        """删除一个存在的题目 JSON 文件。"""
         def _delete() -> None:
+            """在锁内确认文件存在后移除，避免竞态误报。"""
             path = self._path(problem_id)
             if not path.is_file():
                 raise ApiError(404, "problem not found")
@@ -204,6 +214,7 @@ class ProblemStore:
     async def set_public_cases(self, problem_id: str, public_cases: bool) -> None:
         """Step 5：设置测试点明细是否对普通用户可见。"""
         def _write():
+            """在保留其余字段的前提下修改测试点公开标志。"""
             path = self._path(problem_id)
             if not path.is_file():
                 raise ApiError(404, "problem not found")
@@ -214,6 +225,7 @@ class ProblemStore:
 
     @staticmethod
     def _replace(path: Path, content: str) -> None:
+        """通过同目录临时文件和原子替换写入完整 JSON。"""
         # 同目录临时文件 + rename，避免读到被截断或只写了一半的 JSON。
         fd, name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
         try:
@@ -225,6 +237,7 @@ class ProblemStore:
 
     @staticmethod
     def _dumps(cfg: ProblemConfig) -> str:
+        """序列化题目，并保留“未显式设置限制”这一语义。"""
         data = cfg.model_dump(exclude_none=True)
         for field in ("time_limit", "memory_limit"):
             if field not in cfg.model_fields_set:

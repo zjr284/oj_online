@@ -65,6 +65,7 @@ async def list_languages(
 async def register_language(
     body: LanguageIn, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)
 ):
+    """校验命令模板后注册语言；同名配置会被拒绝。"""
     _validate_cmd(body)
     if await db.get(Language, body.name) is not None:
         raise ApiError(400, "language already exists")

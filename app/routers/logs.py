@@ -30,6 +30,7 @@ async def list_access_logs(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
+    """管理员分页查询访问审计记录，并联表显示用户名。"""
     if page is not None and page_size is None:
         raise ApiError(400, "page_size is required when page is provided")
 

@@ -21,6 +21,7 @@ from app.services.user_service import ensure_admin
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """管理服务生命周期：启动时初始化，退出时回收后台任务。"""
     # 启动时：建表、创建数据目录、初始管理员与默认语言
     await init_db()
     await asyncio.to_thread(config.PROBLEMS_DIR.mkdir, parents=True, exist_ok=True)

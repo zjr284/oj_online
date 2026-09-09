@@ -59,6 +59,7 @@ async def get_model_config(user: User = Depends(get_current_user)):
 
 @router.post("/problem-tasks/")
 async def create_problem_task(body: AiTaskIn, user: User = Depends(get_current_user)):
+    """按当前用户模型配置创建异步命题任务。"""
     task = await ai_service.create_task(user, body)
     return ok({
         "task_id": task.id,
@@ -87,6 +88,7 @@ async def list_problem_tasks(
 
 @router.get("/problem-tasks/{task_id}")
 async def get_problem_task(task_id: int, user: User = Depends(get_current_user)):
+    """返回单个任务的进度、结果、用量和错误信息。"""
     return ok(await ai_service.get_task(user, task_id))
 
 
@@ -107,6 +109,7 @@ async def get_problem_task_events(task_id: int, user: User = Depends(get_current
 
 @router.put("/problem-tasks/{task_id}/cancel")
 async def cancel_problem_task(task_id: int, user: User = Depends(get_current_user)):
+    """请求取消尚未结束的 AI 后台任务。"""
     status = await ai_service.cancel_task(user, task_id)
     return ok({"task_id": task_id, "status": status}, msg="task cancelled")
 

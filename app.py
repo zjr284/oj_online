@@ -48,7 +48,10 @@ AI_MODE_LABELS = {
 # ---------- 统一 API 封装（任务 4） ----------
 
 class ApiError(Exception):
+    """封装后端统一响应中的错误码和提示，供页面集中处理。"""
+
     def __init__(self, code: int, msg: str):
+        """保存 HTTP/业务错误码，便于调用方按类型提示。"""
         super().__init__(msg)
         self.code = code
         self.msg = msg
@@ -63,10 +66,12 @@ _ACTIVE_PAGES: dict[str, object] = {}
 
 
 def _valid_problem_id(value: object) -> bool:
+    """前端预校验题号，规则与后端 JSON 文件名安全规则保持一致。"""
     return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", str(value)))
 
 
 def _supports_deepseek_modes(provider_url: object) -> bool:
+    """仅当目标是 DeepSeek 官方域名时，展示其专有的三档生成模式。"""
     try:
         return (urlsplit(str(provider_url)).hostname or "").lower() == "api.deepseek.com"
     except ValueError:
@@ -422,24 +427,28 @@ def _diff_badge(diff: str) -> str:
 
 
 def _status_badge(status) -> str:
+    """把评测任务状态转换为统一的彩色中文徽章。"""
     s = str(status or "pending")
     return {"success": _badge(STATUS_TEXT["success"], "green"), "error": _badge(STATUS_TEXT["error"], "red"),
             "pending": _badge(STATUS_TEXT["pending"], "amber")}.get(s, _badge(s, "gray"))
 
 
 def _role_badge(role) -> str:
+    """把用户角色转换为管理员、普通用户或封禁状态徽章。"""
     r = str(role or "user")
     return {"admin": _badge("管理员", "blue"), "banned": _badge("封禁", "red"),
             "user": _badge("用户", "gray")}.get(r, _badge(r, "gray"))
 
 
 def _access_badge(status) -> str:
+    """把访问审计中的 HTTP 状态码转换为易读徽章。"""
     s = str(status)
     return {"200": _badge(ACCESS_TEXT["200"], "green"), "401": _badge(ACCESS_TEXT["401"], "amber"),
             "403": _badge(ACCESS_TEXT["403"], "red")}.get(s, _badge(s, "gray"))
 
 
 def _ai_status_badge(status) -> str:
+    """把 AI 任务生命周期状态转换为统一徽章。"""
     s = str(status or "pending")
     return {"done": _badge("完成", "green"), "failed": _badge("失败", "red"),
             "running": _badge("执行中", "blue"), "cancelled": _badge("已中断", "gray"),
@@ -447,6 +456,7 @@ def _ai_status_badge(status) -> str:
 
 
 def _ai_mode_radio(*, current: str | None, disabled: bool, key: str):
+    """渲染 DeepSeek 三档命题模式选择器，并保留当前任务的选择。"""
     options = list(AI_MODE_LABELS)
     index = options.index(current) if current in options else 1
     return st.radio(
@@ -530,6 +540,7 @@ _SIDEBAR_PAGE_KEYS = (
 
 
 def render_sidebar() -> None:
+    """按登录态渲染侧边栏导航、用户信息与登出入口。"""
     me = st.session_state.get("me")
     with st.sidebar:
         st.markdown(
@@ -572,6 +583,7 @@ def render_sidebar() -> None:
 # ---------- 任务 1：用户页面组 ----------
 
 def page_login():
+    """渲染登录表单；成功后保存会话用户并安排 Cookie 同步。"""
     st.markdown(_HERO, unsafe_allow_html=True)
     st.title("🔑 登录")
     with st.form("login-form"):
@@ -601,6 +613,7 @@ def page_login():
 
 
 def page_register():
+    """渲染注册表单，注册成功后自动登录以减少一次跳转。"""
     st.markdown(_HERO, unsafe_allow_html=True)
     st.title("📝 注册")
     with st.form("register-form"):
@@ -630,6 +643,7 @@ def page_register():
 
 
 def page_profile():
+    """展示当前用户统计信息，并允许用户修改自己的用户名。"""
     me = st.session_state.get("me")
     st.title("🙍 个人主页")
     try:
@@ -671,6 +685,7 @@ def page_profile():
 
 
 def page_admin_users():
+    """管理员用户管理页：分页查看用户、调整角色及创建管理员。"""
     st.title("🛠 用户管理")
     page_size = 20
     st.session_state.setdefault("user_page", 1)
@@ -924,6 +939,7 @@ def page_audit_logs():
 # ---------- 任务 2：题目页面组 ----------
 
 def page_problems():
+    """题目入口页：清理旧详情状态后展示可分页的题目列表。"""
     # st.switch_page(query_params=...) 会把目标参数短暂写进当前历史项；
     # 浏览器返回列表时清掉详情页遗留参数，保持地址栏和页面状态一致。
     st.query_params.pop("problem", None)
@@ -933,12 +949,14 @@ def page_problems():
 
 
 def page_problem_new():
+    """管理员新建题目页，复用统一题目表单。"""
     st.session_state["prob_view"] = "new"
     st.session_state.pop("prob_id", None)
     _problem_form()
 
 
 def page_problem_detail():
+    """题目详情页：读取 URL 中的题号并展示题面与提交入口。"""
     problem_id = st.query_params.get("problem")
     if not problem_id or not _valid_problem_id(problem_id):
         st.error("题目 ID 无效。")
@@ -951,6 +969,7 @@ def page_problem_detail():
 
 
 def page_problem_edit():
+    """管理员题目编辑页：读取当前题目并交给统一表单保存。"""
     if st.session_state.get("me", {}).get("role") != "admin":
         st.error("只有管理员可以编辑题目。")
         if st.button("← 返回题目列表"):
@@ -968,6 +987,7 @@ def page_problem_edit():
 
 
 def _problem_list():
+    """请求题目数据，渲染题目卡片并维护列表分页状态。"""
     st.title("📋 题目列表")
     try:
         problems = api("GET", "/api/problems/")
@@ -1007,6 +1027,7 @@ def _problem_list():
 
 
 def _problem_detail():
+    """显示单题的完整题面、样例、测试点权限信息及相关操作。"""
     pid = st.session_state.get("prob_id")
     me = st.session_state.get("me")
     if st.button("← 返回列表"):
@@ -1108,6 +1129,7 @@ def _problem_detail():
 
 
 def _problem_form():
+    """复用的新建/编辑题目表单，负责将页面字段组装为题目 JSON。"""
     is_edit = st.session_state["prob_view"] == "edit"
     pid = st.session_state.get("prob_id")
     p = {}
@@ -1252,6 +1274,7 @@ def _submit_panel(pid: str):
 
 
 def page_submissions():
+    """评测记录入口页，恢复筛选条件并显示提交列表。"""
     if "submission_filter_problem" not in st.session_state:
         st.session_state["submission_filter_problem"] = st.session_state.pop(
             "sub_filter_problem", "",
@@ -1279,6 +1302,7 @@ def page_submissions():
 
 
 def page_submission_detail():
+    """提交详情入口页：验证 URL 参数后交由定时刷新片段渲染。"""
     submission_id = st.query_params.get("submission")
     if not submission_id or not str(submission_id).isdigit():
         st.error("提交 ID 无效。")
@@ -1291,6 +1315,7 @@ def page_submission_detail():
 
 
 def _submission_list():
+    """按用户、题目和状态筛选提交，并渲染分页表格。"""
     me = st.session_state.get("me")
     st.title("📜 评测记录")
 
@@ -1307,6 +1332,7 @@ def _submission_list():
         st.session_state.setdefault(widget_key, value)
 
     def save_submission_filters():
+        """把筛选组件值写回会话，并将结果列表重置到第一页。"""
         st.session_state["submission_filter_status"] = st.session_state[
             "_submission-status-widget"
         ]
@@ -1387,6 +1413,7 @@ def _submission_list():
 
 @st.fragment(run_every=1.5)
 def _submission_detail():
+    """定时轮询单个提交，评测结束前持续更新结果。"""
     sid = st.session_state.get("sub_id")
     me = st.session_state.get("me")
     if st.button("← 返回列表"):
@@ -1426,6 +1453,7 @@ def _info_text(v):
 
 
 def _render_submission(s: dict, show_log: bool):
+    """渲染单条提交的状态、资源占用、编译信息和测试点明细。"""
     status = s.get("status", "pending")
     st.markdown(f"### 提交 #{s.get('submission_id')}　{_status_badge(status)}", unsafe_allow_html=True)
     meta = " · ".join(x for x in (
@@ -1651,6 +1679,7 @@ def _render_ai_refine(task: dict):
 
 @st.fragment(run_every=1.5)
 def _ai_task_detail():
+    """定时刷新 AI 任务详情，并根据状态展示进度、结果或错误。"""
     tid = st.session_state.get("ai_task_id")
     if st.button("← 返回 AI 命题页"):
         _go("ai")
@@ -1709,6 +1738,7 @@ def _ai_task_detail():
 
 
 def page_ai():
+    """AI 命题入口页：清理旧任务详情状态并展示任务主页。"""
     # 同上：从任务详情返回首页时不保留无意义的 task 参数。
     st.query_params.pop("task", None)
     st.session_state["ai_view"] = "home"
@@ -1717,6 +1747,7 @@ def page_ai():
 
 
 def page_ai_task():
+    """AI 任务详情入口页：从 URL 读取任务编号并渲染轮询片段。"""
     task_id = st.query_params.get("task")
     if not task_id or not str(task_id).isdigit():
         st.error("AI 任务 ID 无效。")
@@ -1729,6 +1760,7 @@ def page_ai_task():
 
 
 def _ai_home():
+    """AI 命题主页：管理模型配置、创建任务并列出历史任务。"""
     st.title("✨ AI 智能命题")
     st.caption("配置大模型后，输入命题需求即可自动生成符合题库规范的题目，实时查看进度并可导入题库。")
     st.caption(
@@ -1935,6 +1967,7 @@ def _build_pages(me: dict | None) -> dict[str, object]:
 
 
 def main():
+    """应用入口：恢复会话、注入主题、注册原生页面并运行当前页面。"""
     global _ACTIVE_PAGES
     _inject_ui()
     restore_state = _restore_login()

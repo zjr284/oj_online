@@ -12,6 +12,7 @@ EXT_RE = r"^\.?[A-Za-z0-9]{1,10}$"
 
 
 class LanguageIn(BaseModel):
+    """动态注册一种编译/运行命令模板及默认资源限制。"""
     name: str = Field(pattern=NAME_RE)
     file_ext: str = Field(pattern=EXT_RE)
     compile_cmd: str | None = Field(default=None, max_length=256)

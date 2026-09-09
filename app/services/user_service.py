@@ -35,6 +35,7 @@ def validate_credentials(username: str, password: str) -> None:
 
 
 async def create_user(db: AsyncSession, username: str, password: str, role: str = "user") -> User:
+    """校验并创建用户；密码哈希在线程中计算，避免阻塞事件循环。"""
     validate_credentials(username, password)
     if await db.scalar(select(User).where(User.username == username)) is not None:
         raise ApiError(400, "username already exists")

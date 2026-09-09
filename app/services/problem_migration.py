@@ -10,6 +10,7 @@ from app.schemas.problem import PROBLEM_ID_RE
 
 
 def _valid(value: object) -> bool:
+    """判断旧题号能否安全作为新的 JSON 文件名。"""
     return bool(re.fullmatch(PROBLEM_ID_RE, str(value)))
 
 

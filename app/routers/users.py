@@ -55,6 +55,7 @@ async def list_users(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
+    """管理员分页查看所有用户及其提交统计。"""
     total = await db.scalar(select(func.count()).select_from(User)) or 0
     # api.md 示例按 submit_count 降序排列（100 / 90 / 80）；并列时按 user_id 升序保证翻页稳定
     submit_cnt = (
@@ -83,6 +84,7 @@ async def get_user(user_id: int, db: AsyncSession = Depends(get_db), me: User = 
 async def change_role(
     user_id: int, body: RoleIn, db: AsyncSession = Depends(get_db), admin: User = Depends(require_admin)
 ):
+    """管理员变更目标用户角色，并记录角色变更日志。"""
     if body.role not in VALID_ROLES:
         raise ApiError(400, "invalid role")
     user = await db.get(User, user_id)

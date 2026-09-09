@@ -35,6 +35,7 @@ def valid_problem_id(problem_id: str = Path(...)) -> str:
 @router.get("")
 @router.get("/")
 async def list_problems(user: User = Depends(get_current_user)):
+    """返回当前登录用户可访问的题目摘要列表。"""
     return ok(await store.list_problems())
 
 
@@ -43,6 +44,7 @@ async def list_problems(user: User = Depends(get_current_user)):
 async def create_problem(cfg: ProblemConfig,
                          assign_new_id: bool = False,
                          user: User = Depends(get_current_user)):
+    """创建题目；普通用户不能自行公开测试点明细。"""
     if cfg.public_cases and user.role != "admin":
         raise ApiError(403, "admin permission required to change log visibility")
     saved_id = await store.create(cfg, assign_new_id=assign_new_id)
@@ -52,6 +54,7 @@ async def create_problem(cfg: ProblemConfig,
 @router.get("/{problem_id}")
 async def get_problem(problem_id: str = Depends(valid_problem_id),
                       user: User = Depends(get_current_user)):
+    """按已校验题号读取题目完整 JSON。"""
     return ok(await store.get(problem_id))
 
 
@@ -59,6 +62,7 @@ async def get_problem(problem_id: str = Depends(valid_problem_id),
 async def update_problem(cfg: ProblemConfig,
                          problem_id: str = Depends(valid_problem_id),
                          admin: User = Depends(require_admin)):
+    """管理员覆盖更新题目，且请求体题号必须与路径相同。"""
     if cfg.id != problem_id:
         raise ApiError(400, "body id must match path id")
     await store.update(cfg, allow_visibility=True)
@@ -68,6 +72,7 @@ async def update_problem(cfg: ProblemConfig,
 @router.delete("/{problem_id}")
 async def delete_problem(problem_id: str = Depends(valid_problem_id),
                          admin: User = Depends(require_admin)):
+    """管理员删除题目文件；历史提交记录仍保留题号引用。"""
     await store.delete(problem_id)
     return ok({"id": problem_id}, msg="delete success")
 
@@ -78,6 +83,7 @@ async def set_log_visibility(
     body: LogVisibilityIn = Body(...),
     admin: User = Depends(require_admin),
 ):
+    """管理员控制该题测试点明细是否可被普通用户查看。"""
     await store.set_public_cases(problem_id, body.public_cases)
     return ok({"problem_id": problem_id, "public_cases": body.public_cases},
               msg="log visibility updated")

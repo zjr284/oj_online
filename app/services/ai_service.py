@@ -151,10 +151,13 @@ class ModelConfigStore:
     """模型配置存取：api_key 经 Fernet 加密，只读时在内存中解密。"""
 
     def __init__(self):
+        """初始化进程内互斥锁，串行化配置文件的读写。"""
         self._lock = threading.RLock()
 
     async def _locked(self, operation):
+        """在线程中持锁执行同步文件操作，避免阻塞 API 事件循环。"""
         def run():
+            """在同一临界区运行传入的读写闭包。"""
             with self._lock:
                 return operation()
         return await asyncio.to_thread(run)
@@ -162,6 +165,7 @@ class ModelConfigStore:
     async def load(self) -> dict | None:
         """读取完整配置（含解密后的 api_key）；未配置返回 None。"""
         def _read() -> dict | None:
+            """读取并解密磁盘配置；由锁保护避免读到半写入文件。"""
             if not CONFIG_PATH.is_file():
                 return None
             data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
@@ -178,6 +182,7 @@ class ModelConfigStore:
     async def save(self, cfg: ModelConfigIn) -> dict:
         """保存配置；返回不含 api_key 的公开字段（api.md）。"""
         def _write() -> dict:
+            """加密密钥后原子替换配置文件，并返回可公开字段。"""
             key = self._load_key()
             data = {
                 "provider_url": cfg.provider_url.strip(),
@@ -244,6 +249,7 @@ def apply_generation_mode(cfg: dict, mode: str | None) -> dict:
 # ---- 提示词与结果解析 ----
 
 def build_prompt(requirement: str, reference: dict | None, *, revision: bool = False) -> str:
+    """构造模型提示词；修改模式携带上一版完整题目作为上下文。"""
     heading = "本轮修改要求" if revision else "命题需求"
     parts = [f"{heading}：{requirement}"]
     if reference:
@@ -306,6 +312,7 @@ def build_usage(
     inp = raw.get("prompt_tokens", raw.get("input_tokens"))
     out = raw.get("completion_tokens", raw.get("output_tokens"))
     def valid_tokens(value):
+        """只接受非布尔的非负整数 Token 数。"""
         return isinstance(value, int) and not isinstance(value, bool) and value >= 0
     cache_hit = raw.get("prompt_cache_hit_tokens")
     cache_miss = raw.get("prompt_cache_miss_tokens")
@@ -412,6 +419,7 @@ def build_usage(
 def merge_usage(previous: dict | None, current: dict) -> dict:
     """重试也会计费；保留每次调用明细，汇总已知的全部调用。"""
     def individual_calls(summary: dict | None) -> list[dict]:
+        """把旧版汇总或新版 calls 列表统一拆成单次调用明细。"""
         if not summary:
             return []
         calls = summary.get("calls")
@@ -554,6 +562,7 @@ async def _call_model(
 # ---- 任务编排 ----
 
 def _serialize(t: AiTask) -> dict:
+    """将任务 ORM 对象转换为不含密钥的 API 响应。"""
     return {
         "task_id": t.id,
         "status": t.status,
@@ -628,6 +637,7 @@ async def _run_task(task_id: int, cfg: dict | None = None) -> None:
         # 模型调用期间每 2s 推送一次进度（advance.md R3：
         # 「执行期间界面应持续展示可观察的进度信息」，而非静默等待结果）
         async def _ticker():
+            """模型等待期间周期性推送可观察的进度文本。"""
             elapsed = 0.0
             while task_id not in _cancelled:
                 await asyncio.sleep(2)
@@ -638,12 +648,14 @@ async def _run_task(task_id: int, cfg: dict | None = None) -> None:
         ticker = asyncio.create_task(_ticker())
         try:
             async def record_usage(usage):
+                """每次模型返回用量就持久化，避免后续校验失败丢账单。"""
                 async with SessionLocal() as db:
                     await db.execute(update(AiTask).where(AiTask.id == task_id)
                                      .values(usage=usage))
                     await db.commit()
                 await _push(task_id, "usage", usage)
             async def model_pipeline():
+                """生成初稿；高质量模式额外执行一次结构与数据审校。"""
                 initial_usage, initial_content = await _call_model(
                     cfg, prompt, record_usage,
                 )
@@ -660,6 +672,7 @@ async def _run_task(task_id: int, cfg: dict | None = None) -> None:
                 )
 
                 async def record_review_usage(review_usage):
+                    """把审校调用的用量与初稿用量合并后保存。"""
                     await record_usage(merge_usage(initial_usage, review_usage))
 
                 review_usage, reviewed_content = await _call_model(
@@ -947,6 +960,7 @@ async def cancel_task(user: User, task_id: int) -> str:
 
 
 def _sse(event: str, data: dict) -> str:
+    """编码一条符合 Server-Sent Events 格式的进度事件。"""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
@@ -986,6 +1000,7 @@ async def sse_stream(state: dict, task_id: int):
 
 
 async def shutdown() -> None:
+    """取消并等待所有进程内 AI 后台任务结束。"""
     tasks = list(_tasks.values())
     _cancelled.update(_tasks)
     for task in tasks:

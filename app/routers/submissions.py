@@ -34,6 +34,7 @@ submit_limiter = RateLimiter(config.SUBMIT_RATE_LIMIT, config.SUBMIT_RATE_WINDOW
 
 
 def _fmt_time(dt) -> str:
+    """把数据库时间转换为前端稳定展示的秒级字符串。"""
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -51,6 +52,7 @@ def _parse_info(raw: str | None) -> dict | str | None:
 
 
 def _submission_item(sub: Submission) -> dict:
+    """序列化提交记录；未结束或异常记录按接口约定最小化返回。"""
     # api.md：error/pending 状态只返回 id 和 status
     if sub.status in ("pending", "error"):
         return {"submission_id": str(sub.id), "status": sub.status}
@@ -102,6 +104,7 @@ async def create_submission(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """校验题目和语言后创建 pending 提交，并调度后台评测。"""
     submit_limiter.check(str(user.id))   # 超限 → 429
 
     # 题目与语言存在性检查 → 404
@@ -131,6 +134,7 @@ async def list_submissions(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """按权限和可选用户、题目、状态条件分页查询提交。"""
     # 先解析一级身份条件并完成资源权限判断，再校验 page/status 等二级
     # 参数，以满足 api.md 的 403 > 400 异常优先级。
     user_id = _optional_text(user_id)
@@ -177,6 +181,7 @@ async def get_submission(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """读取单条提交；普通用户只能查看自己的记录。"""
     sub = await db.get(Submission, submission_id)
     if sub is None:
         raise ApiError(404, "submission not found")
@@ -205,6 +210,7 @@ async def rejudge_submission(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
+    """管理员取消旧任务，重置记录后以新代际重新评测。"""
     sub = await db.get(Submission, submission_id)
     if sub is None:
         raise ApiError(404, "submission not found")
@@ -229,6 +235,7 @@ async def rejudge_submission(
 
 
 async def _record_access(db: AsyncSession, user_id: int, problem_id: str, status: int) -> None:
+    """写入测试点明细访问的允许或拒绝审计记录。"""
     db.add(AccessLog(user_id=user_id, problem_id=problem_id, action="view_logs", status=status))
 
 
@@ -238,6 +245,7 @@ async def get_submission_log(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """按所有权和题目公开策略裁剪后返回测试点明细。"""
     sub = await db.get(Submission, submission_id)
     if sub is None:
         raise ApiError(404, "submission not found")   # api.md：评测不存在不记录审计

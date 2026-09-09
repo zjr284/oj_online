@@ -16,17 +16,20 @@ PROBLEM_ID_RE = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
 
 
 class Sample(BaseModel):
+    """题面公开展示的一组输入输出样例。"""
     input: str
     output: str
 
 
 class TestCase(BaseModel):
+    """评测使用的单个输入输出测试点。"""
     id: str | None = None   # 测试点编号（可选，缺省按数组顺序编号）
     input: str
     output: str
 
 
 class ProblemConfig(BaseModel):
+    """题目 JSON 的完整结构，也是新建和编辑接口的请求体。"""
     # ---- 必填字段 ----
     id: str = Field(pattern=PROBLEM_ID_RE, description="题目唯一字符串标识")
     title: str = Field(min_length=1)
@@ -49,4 +52,5 @@ class ProblemConfig(BaseModel):
 
 
 class LogVisibilityIn(BaseModel):
+    """管理员修改测试点明细是否对普通用户公开的请求体。"""
     public_cases: bool = False

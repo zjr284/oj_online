@@ -37,6 +37,7 @@ def schedule_judge(submission_id: int) -> None:
     task = asyncio.create_task(judge_submission(submission_id, gen))
     _judge_tasks[submission_id] = task
     def done(completed):
+        """仅当回调仍属于当前代际时移除任务登记。"""
         if _judge_tasks.get(submission_id) is completed:
             _judge_tasks.pop(submission_id, None)
     task.add_done_callback(done)
@@ -52,6 +53,7 @@ async def cancel_judge(submission_id: int) -> None:
 
 
 async def shutdown() -> None:
+    """取消并等待所有正在进行的评测任务，供服务退出或重置调用。"""
     for sid in list(_judge_tasks):
         await cancel_judge(sid)
     _judge_tasks.clear()
@@ -75,6 +77,7 @@ async def judge_submission(submission_id: int, generation: int) -> None:
 
 
 async def _judge(submission_id: int, generation: int, workdir: Path) -> None:
+    """在独立目录完成编译和逐测试点评测，并把结果写回数据库。"""
     async with SessionLocal() as db:
         sub = await db.get(Submission, submission_id)
         if sub is None:

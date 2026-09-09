@@ -28,15 +28,19 @@ MEMORY_POLL_INTERVAL = 0.01
 
 
 class JudgeResult:
+    """单个测试点的判定结果、耗时、峰值内存与诊断信息。"""
     __slots__ = ("case_id", "result", "time", "memory", "detail")
 
     def __init__(self, case_id, result, time=0.0, memory=0.0, detail=""):
+        """用评测循环收集到的原始值构造轻量结果对象。"""
         self.case_id, self.result = case_id, result
         self.time, self.memory, self.detail = time, memory, detail
 
 
 def _set_limits(cpu_seconds: float, max_bytes: int, nproc: int = 4096):
+    """返回子进程启动钩子，设置 CPU、输出、进程数和 core 限制。"""
     def apply():
+        """由 ``Popen(preexec_fn=...)`` 在子进程执行限制设置。"""
         cpu = max(1, math.ceil(cpu_seconds))
         resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu + 1))
         resource.setrlimit(resource.RLIMIT_FSIZE, (max_bytes, max_bytes))
@@ -49,6 +53,7 @@ def _set_limits(cpu_seconds: float, max_bytes: int, nproc: int = 4096):
 
 
 def _kill_group(proc):
+    """终止评测进程组，防止代码派生的子进程遗留。"""
     try:
         os.killpg(proc.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -110,6 +115,7 @@ def _execute(cmd, stdin_bytes, time_limit, mem_limit_bytes, workdir, cancelled=N
 
 
 async def _execute_async(*args):
+    """在线程中执行阻塞评测；协程取消时等待线程完成清理。"""
     cancelled = threading.Event()
     worker = asyncio.create_task(asyncio.to_thread(_execute, *args, cancelled))
     try:
@@ -122,8 +128,10 @@ async def _execute_async(*args):
 
 
 class OutputComparer:
+    """输出比较器：忽略行尾空白和结尾的空行。"""
     @staticmethod
     def _normalize(text: str) -> list[str]:
+        """统一换行并清除允许忽略的尾随空白。"""
         lines = text.replace("\r\n", "\n").split("\n")
         while lines and not lines[-1].strip():
             lines.pop()
@@ -131,6 +139,7 @@ class OutputComparer:
 
     @staticmethod
     def compare(expected: str, actual: str) -> tuple[bool, str]:
+        """比较标准输出与实际输出；失败时返回截断后的差异。"""
         if OutputComparer._normalize(expected) == OutputComparer._normalize(actual):
             return True, ""
         return False, f"expected:\n{expected[:200]}\n---\ngot:\n{actual[:200]}"
@@ -139,6 +148,7 @@ class OutputComparer:
 class JudgeRunner:
     """优先级：题目显式限制 → 语言配置 → 系统默认。"""
     def __init__(self, language: dict, problem: dict, workdir: Path):
+        """固化本次评测的语言、题目限制和独立工作目录。"""
         self.language, self.problem, self.workdir = language, problem, workdir
         self.time_limit = float(problem.get("time_limit") or language.get("time_limit")
                                 or config.DEFAULT_TIME_LIMIT)
@@ -150,14 +160,17 @@ class JudgeRunner:
         self._src, self._exe = workdir / f"main{ext}", workdir / "main"
 
     def _expand(self, cmd: str) -> list[str]:
+        """展开源码/可执行文件占位符并分词，始终不经过 shell。"""
         # 先分词再替换，含空格的工作目录仍是一个参数；永不经 shell 执行。
         return [part.replace("{src}", str(self._src)).replace("{exe}", str(self._exe))
                 for part in shlex.split(cmd)]
 
     def _sanitize(self, text: str) -> str:
+        """移除临时目录路径并限制诊断文本长度。"""
         return text.replace(str(self.workdir), "<workdir>")[-INFO_LIMIT:]
 
     async def compile(self, code: str) -> tuple[bool, str | None]:
+        """写入源文件并执行可选编译命令，返回成功标志和编译信息。"""
         await asyncio.to_thread(self._src.write_text, code, encoding="utf-8")
         cmd = self.language.get("compile_cmd")
         if not cmd:
@@ -171,6 +184,7 @@ class JudgeRunner:
         return rc == 0, self._sanitize((out + err).decode(errors="replace"))
 
     async def run_case(self, case: dict, index: int) -> JudgeResult:
+        """运行一个测试点，映射资源/退出/输出结果为 OJ 判定。"""
         case_id = str(case.get("id") or index + 1)
         rc, out, err, wall, peak, memory, timeout = await _execute_async(
             self._expand(self.language["run_cmd"]), case["input"].encode(),

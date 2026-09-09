@@ -14,6 +14,7 @@ _BCRYPT_MAX_BYTES = 72
 
 
 def hash_password(password: str) -> str:
+    """使用 bcrypt 保存密码；超长输入先摘要，避免 72 字节截断碰撞。"""
     encoded = password.encode()
     if len(encoded) > _BCRYPT_MAX_BYTES:
         digest = hashlib.sha256(encoded).hexdigest().encode()
@@ -22,6 +23,7 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, stored: str) -> bool:
+    """验证新旧两种密码格式，便于平滑升级已有账户。"""
     if stored.startswith("bcrypt_sha256$"):
         digest = hashlib.sha256(password.encode()).hexdigest().encode()
         try:

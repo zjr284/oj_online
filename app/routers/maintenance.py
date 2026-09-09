@@ -29,6 +29,7 @@ async def reset(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
+    """管理员重置演示数据；先停止后台任务以避免并发写入。"""
     # 先停止后台写入，防止重置后的 ID 被旧任务结果覆盖。
     await judge_service.shutdown()
     await ai_service.shutdown()

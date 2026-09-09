@@ -10,7 +10,9 @@ from app.core.errors import ApiError
 
 
 class RateLimiter:
+    """进程内滑动时间窗口限流器，按用户记录最近提交时间。"""
     def __init__(self, limit: int, window: float):
+        """初始化窗口容量、时长和按调用方隔离的命中队列。"""
         self.limit = limit
         self.window = window
         self._hits: dict[str, deque[float]] = defaultdict(deque)
