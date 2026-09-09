@@ -20,7 +20,10 @@ from app import config
 from app.core.errors import ApiError
 from app.schemas.problem import PROBLEM_ID_RE, ProblemConfig
 
-LEGACY_PROBLEM_IDS = {"P1001": "1001", "sum_2": "1002", "find_range": "1003"}
+
+def _problem_sort_key(path: Path) -> tuple:
+    """数字题号按数值排序，其余合法字符串题号按字典序排序。"""
+    return (0, int(path.stem)) if path.stem.isdigit() else (1, path.stem.casefold(), path.stem)
 
 
 class ProblemStore:
@@ -44,25 +47,23 @@ class ProblemStore:
                 return operation()
         return await asyncio.to_thread(run)
 
-    async def migrate_numeric_ids(self) -> dict[str, str]:
-        """把旧的非数字题目文件安全迁移为数字编号，并返回引用映射。"""
+    async def migrate_safe_ids(self) -> dict[str, str]:
+        """仅修复旧数据中的不安全题号，并返回需要同步的引用映射。
+
+        api.md 明确允许 P1001、sum_2 等字符串题号，合法字符串必须原样保留。
+        """
         def _migrate() -> dict[str, str]:
             self.base_dir.mkdir(parents=True, exist_ok=True)
-            mapping = dict(LEGACY_PROBLEM_IDS)
+            mapping: dict[str, str] = {}
             used = {
                 path.stem
                 for path in self.base_dir.glob("*.json")
                 if re.fullmatch(PROBLEM_ID_RE, path.stem)
             }
-            next_id = max([1000, *(int(value) for value in used)]) + 1
+            numeric = [int(value) for value in used if value.isdigit()]
+            next_id = max([1000, *numeric]) + 1
 
-            paths = sorted(
-                self.base_dir.glob("*.json"),
-                key=lambda path: (
-                    not bool(re.fullmatch(PROBLEM_ID_RE, path.stem)),
-                    int(path.stem) if re.fullmatch(PROBLEM_ID_RE, path.stem) else path.stem,
-                ),
-            )
+            paths = sorted(self.base_dir.glob("*.json"), key=_problem_sort_key)
             for path in paths:
                 try:
                     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -71,8 +72,11 @@ class ProblemStore:
                 old_id = str(raw.get("id", path.stem))
                 if re.fullmatch(PROBLEM_ID_RE, old_id) and path.stem == old_id:
                     continue
-                new_id = mapping.get(old_id)
-                if not new_id or new_id in used:
+                # 文件名与内容不一致时优先采用内容里的合法题号；只有题号
+                # 本身不安全或目标已占用时才分配兼容的数字编号。
+                new_id = old_id if re.fullmatch(PROBLEM_ID_RE, old_id) else None
+                target_occupied = bool(new_id and new_id in used and new_id != path.stem)
+                if not new_id or target_occupied:
                     while str(next_id) in used:
                         next_id += 1
                     new_id = str(next_id)
@@ -93,13 +97,7 @@ class ProblemStore:
         def _read() -> list[dict]:
             self.base_dir.mkdir(parents=True, exist_ok=True)
             items: list[dict] = []
-            paths = sorted(
-                self.base_dir.glob("*.json"),
-                key=lambda path: (
-                    not bool(re.fullmatch(PROBLEM_ID_RE, path.stem)),
-                    int(path.stem) if re.fullmatch(PROBLEM_ID_RE, path.stem) else path.stem,
-                ),
-            )
+            paths = sorted(self.base_dir.glob("*.json"), key=_problem_sort_key)
             for path in paths:
                 try:
                     data = ProblemConfig.model_validate_json(path.read_text(encoding="utf-8"))
@@ -139,53 +137,41 @@ class ProblemStore:
         """创建题目并返回实际题号。
 
         普通创建保持严格判重；AI 导入等明确的“另存为新题目”场景可启用
-        ``assign_new_id``，在请求题号已占用时原子选择后续可用数字题号。
+        ``assign_new_id``，在请求题号已占用时原子选择后续可用题号。
         """
         def _write() -> str:
             self.base_dir.mkdir(parents=True, exist_ok=True)
-            requested_id = cfg.id
+            base_id = cfg.id
             max_problem_id = 10**18 - 1
+            version = 1
 
             while True:
-                requested_path = self.base_dir / f"{requested_id}.json"
-                if not requested_path.exists() and not requested_path.is_symlink():
-                    candidate_id = requested_id
-                elif not assign_new_id:
-                    candidate_id = requested_id
+                if version == 1:
+                    candidate_id = base_id
+                elif base_id.isdigit():
+                    candidate_id = str((int(base_id) + version - 1) % (max_problem_id + 1))
                 else:
-                    # 从原题号的下一个编号开始找。最多检查“现有文件数 + 1”个
-                    # 连续编号就必然能找到空位，无需扫描整个 18 位编号空间。
-                    occupied = {
-                        path.stem
-                        for path in self.base_dir.glob("*.json")
-                        if re.fullmatch(PROBLEM_ID_RE, path.stem)
-                    }
-                    start = (int(requested_id) + 1) % (max_problem_id + 1)
-                    candidate_id = ""
-                    for offset in range(len(occupied) + 1):
-                        value = (start + offset) % (max_problem_id + 1)
-                        possible = str(value)
-                        possible_path = self.base_dir / f"{possible}.json"
-                        if (possible not in occupied and not possible_path.exists()
-                                and not possible_path.is_symlink()):
-                            candidate_id = possible
-                            break
-                    if not candidate_id:  # 实际文件系统中不可达，保留明确错误兜底。
-                        raise ApiError(409, "no available problem id")
+                    suffix = f"_{version}"
+                    candidate_id = base_id[:64 - len(suffix)] + suffix
 
                 saved = (cfg if candidate_id == cfg.id
                          else cfg.model_copy(update={"id": candidate_id}))
-                path = self._path(candidate_id)
                 try:
+                    path = self._path(candidate_id)
                     # "x" 独占创建：即使存在多进程竞争也绝不覆盖已有题目。
                     with open(path, "x", encoding="utf-8") as f:
                         f.write(self._dumps(saved))
                     return candidate_id
+                except ApiError:
+                    # 自动另存时跳过被符号链接占用的候选名；普通创建保持
+                    # 原有安全错误，不能把异常悄悄解释为普通重复。
+                    if not assign_new_id:
+                        raise
+                    version += 1
                 except FileExistsError:
                     if not assign_new_id:
                         raise ApiError(409, "problem already exists")
-                    # 另一个进程刚占用了候选题号，以下一编号重新分配。
-                    requested_id = str((int(candidate_id) + 1) % (max_problem_id + 1))
+                    version += 1
 
         return await self._locked(_write)
 

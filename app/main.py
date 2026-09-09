@@ -3,6 +3,7 @@
 启动方式：
     uvicorn app.main:app --reload
 """
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -22,8 +23,8 @@ from app.services.user_service import ensure_admin
 async def lifespan(app: FastAPI):
     # 启动时：建表、创建数据目录、初始管理员与默认语言
     await init_db()
-    config.PROBLEMS_DIR.mkdir(parents=True, exist_ok=True)
-    await migrate_problem_references(await store.migrate_numeric_ids())
+    await asyncio.to_thread(config.PROBLEMS_DIR.mkdir, parents=True, exist_ok=True)
+    await migrate_problem_references(await store.migrate_safe_ids())
     await ensure_admin()
     await ensure_languages()
     await judge_service.normalize_legacy_results()

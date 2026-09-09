@@ -12,7 +12,7 @@ import json
 
 from app.core.routing import AuthenticatedRoute
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,6 +66,19 @@ def _submission_item(sub: Submission) -> dict:
     }
 
 
+def _query_int(value: str | None, name: str, *, minimum: int | None = None) -> int | None:
+    """在业务权限检查后解析查询整数，保证 403 优先于二级参数的 400。"""
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise ApiError(400, f"invalid {name}")
+    if minimum is not None and parsed < minimum:
+        raise ApiError(400, f"invalid {name}")
+    return parsed
+
+
 @router.post("/")
 async def create_submission(
     body: SubmissionIn,
@@ -93,31 +106,35 @@ async def create_submission(
 
 @router.get("/")
 async def list_submissions(
-    user_id: int | None = None,
+    user_id: str | None = None,
     problem_id: str | None = None,
     status: str | None = None,
-    page: int | None = Query(None, ge=1),
-    page_size: int | None = Query(None, ge=1),
+    page: str | None = None,
+    page_size: str | None = None,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    # 权限：普通用户只能查自己的记录
-    if user.role != "admin" and user_id is not None and user_id != user.id:
+    # 先解析一级身份条件并完成资源权限判断，再校验 page/status 等二级
+    # 参数，以满足 api.md 的 403 > 400 异常优先级。
+    requested_user_id = _query_int(user_id, "user_id")
+    if (user.role != "admin" and requested_user_id is not None
+            and requested_user_id != user.id):
         raise ApiError(403, "permission denied")
+
+    page = _query_int(page, "page", minimum=1)
+    page_size = _query_int(page_size, "page_size", minimum=1)
     if page is not None and page_size is None:
         raise ApiError(400, "page_size is required when page is provided")
-    if user_id is None and problem_id is None:
+    if requested_user_id is None and problem_id is None:
         raise ApiError(400, "at least one of user_id or problem_id is required")
     if status is not None and status not in ("pending", "success", "error"):
         raise ApiError(400, "invalid status")
     if user.role != "admin":
-        if user_id is not None and user_id != user.id:
-            raise ApiError(403, "permission denied")
-        user_id = user.id
+        requested_user_id = user.id
 
     conds = []
-    if user_id is not None:
-        conds.append(Submission.user_id == user_id)
+    if requested_user_id is not None:
+        conds.append(Submission.user_id == requested_user_id)
     if problem_id is not None:
         conds.append(Submission.problem_id == problem_id)
     if status is not None:

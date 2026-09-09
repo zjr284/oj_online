@@ -2,6 +2,7 @@
 
 清空用户/题目/提交数据、退出登录、重建初始管理员。
 """
+import asyncio
 import shutil
 
 from app.core.routing import AuthenticatedRoute
@@ -40,10 +41,10 @@ async def reset(
         await conn.run_sync(Base.metadata.create_all)
 
     # 2. 清空题目目录
-    shutil.rmtree(config.PROBLEMS_DIR, ignore_errors=True)
-    config.PROBLEMS_DIR.mkdir(parents=True, exist_ok=True)
-    ai_service.CONFIG_PATH.unlink(missing_ok=True)
-    ai_service.KEY_PATH.unlink(missing_ok=True)
+    await asyncio.to_thread(shutil.rmtree, config.PROBLEMS_DIR, ignore_errors=True)
+    await asyncio.to_thread(config.PROBLEMS_DIR.mkdir, parents=True, exist_ok=True)
+    await asyncio.to_thread(ai_service.CONFIG_PATH.unlink, missing_ok=True)
+    await asyncio.to_thread(ai_service.KEY_PATH.unlink, missing_ok=True)
 
     # 3. 重建初始管理员与默认语言（恢复系统初始环境）
     await ensure_admin()

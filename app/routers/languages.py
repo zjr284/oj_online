@@ -48,8 +48,11 @@ def _validate_cmd(lang: LanguageIn) -> None:
 
 
 @router.get("/")
-async def list_languages(db: AsyncSession = Depends(get_db)):
-    """公开接口：返回 {name: [语言列表]}。
+async def list_languages(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """登录用户查询语言列表，返回 {name: [语言列表]}。
 
     按注册（插入）顺序返回，与 api.md 示例 ["python", "cpp"] 一致。
     语言无删除接口，SQLite 的 rowid 单调递增，即注册顺序。

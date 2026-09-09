@@ -17,14 +17,16 @@ BASE = {"name": "go", "file_ext": ".go", "run_cmd": "go run {src}"}
 
 
 async def test_list_format_and_default_order(client):
-    """GET 公开接口：data 为 {name: [...]}，顺序与 api.md 示例 ["python", "cpp"] 一致。"""
+    """GET 登录接口：data 为 {name: [...]}，顺序与 api.md 示例一致。"""
     await ensure_languages()
+    await login(client, "admin", "admintestpassword")
     resp = await client.get("/api/languages/")
     assert resp.status_code == 200
     assert resp.json() == {"code": 200, "msg": "success", "data": {"name": ["python", "cpp"]}}
 
 
 async def test_list_empty_when_no_languages(client):
+    await login(client, "admin", "admintestpassword")
     resp = await client.get("/api/languages/")
     assert resp.status_code == 200
     assert resp.json()["data"] == {"name": []}
@@ -61,6 +63,7 @@ async def test_register_success_and_list_append(client):
 
 
 async def test_register_requires_login(client):
+    assert (await client.get("/api/languages/")).status_code == 401
     resp = await client.post("/api/languages/", json=BASE)
     assert resp.status_code == 401
     assert resp.json() == {"code": 401, "msg": "not logged in", "data": None}
@@ -88,6 +91,7 @@ async def test_register_banned_user_forbidden(client):
     resp = await bob.post("/api/languages/", json=BASE)
     assert resp.status_code == 403
     assert resp.json()["data"] is None
+    assert (await bob.get("/api/languages/")).status_code == 403
 
 
 async def test_register_duplicate(client):

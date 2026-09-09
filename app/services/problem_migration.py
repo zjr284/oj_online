@@ -1,4 +1,4 @@
-"""题目数字编号迁移：同步数据库内对旧文件编号的引用。"""
+"""题目安全编号迁移：同步数据库内对旧文件编号的引用。"""
 import re
 
 from sqlalchemy import select, update
@@ -9,12 +9,12 @@ from app.models import AccessLog, AiTask, Submission
 from app.schemas.problem import PROBLEM_ID_RE
 
 
-def _numeric(value: object) -> bool:
+def _valid(value: object) -> bool:
     return bool(re.fullmatch(PROBLEM_ID_RE, str(value)))
 
 
 async def migrate_problem_references(mapping: dict[str, str]) -> dict[str, str]:
-    """迁移全部历史引用，包括已删除题目留下的非数字编号。"""
+    """同步文件迁移映射，并只修复历史引用中的不安全编号。"""
     mapping = dict(mapping)
     async with SessionLocal() as db:
         submissions = (await db.scalars(select(Submission.problem_id).distinct())).all()
@@ -29,12 +29,13 @@ async def migrate_problem_references(mapping: dict[str, str]) -> dict[str, str]:
         )
 
         used = {
-            path.stem for path in config.PROBLEMS_DIR.glob("*.json") if _numeric(path.stem)
+            path.stem for path in config.PROBLEMS_DIR.glob("*.json") if _valid(path.stem)
         }
-        used.update(value for value in mapping.values() if _numeric(value))
-        used.update(value for value in referenced if _numeric(value))
-        next_id = max([1000, *(int(value) for value in used)]) + 1
-        for old_id in sorted(value for value in referenced if not _numeric(value)):
+        used.update(value for value in mapping.values() if _valid(value))
+        used.update(value for value in referenced if _valid(value))
+        numeric = [int(value) for value in used if value.isdigit()]
+        next_id = max([1000, *numeric]) + 1
+        for old_id in sorted(value for value in referenced if not _valid(value)):
             if old_id in mapping:
                 continue
             while str(next_id) in used:

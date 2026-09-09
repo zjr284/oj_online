@@ -4,6 +4,8 @@
 如需切换 PostgreSQL/MySQL，只需修改 config.DB_URL 并安装对应异步驱动，
 业务代码（models/services/routers）不受影响。
 """
+import asyncio
+
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
@@ -24,7 +26,7 @@ async def init_db() -> None:
     """建表并补齐轻量字段迁移（均幂等，可重复调用）。"""
     from app import models  # noqa: F401  确保所有模型已注册到 Base.metadata
 
-    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(config.DATA_DIR.mkdir, parents=True, exist_ok=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_migrate_columns)

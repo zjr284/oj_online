@@ -100,6 +100,20 @@ def test_streamlit_navigation_switches_page_without_login_loss(monkeypatch):
     assert any(str(title.value) == "🙍 个人主页" for title in at.title)
 
 
+def test_list_pages_remove_detail_query_parameters(monkeypatch):
+    """浏览器返回列表/AI 首页时，地址栏不残留详情页参数。"""
+    monkeypatch.setenv("OJ_API_BASE", "http://127.0.0.1:1")
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["me"] = {"username": "alice", "user_id": "2", "role": "user"}
+    at.query_params["problem"] = "P1001"
+    at.run()
+    assert "problem" not in at.query_params
+
+    at.query_params["task"] = "17"
+    _open_page(at, "ai", task="17")
+    assert "task" not in at.query_params
+
+
 def test_ai_and_language_pages_are_available_to_regular_users(monkeypatch):
     """普通用户可以进入 AI 命题和语言管理页面。
 
@@ -494,6 +508,27 @@ def test_native_route_restores_previous_interface(monkeypatch):
     assert any(str(title.value) == '🙍 个人主页' for title in at.title)
 
 
+def test_documented_string_problem_id_opens_in_streamlit(monkeypatch):
+    """Step 1 的 P1001/sum_2 字符串题号也能由原生路由打开。"""
+    state = {'saved_problem': {
+        'id': 'P1001', 'title': 'A + B Problem',
+        'description': '计算两个整数之和。',
+        'input_description': '两个整数。', 'output_description': '整数之和。',
+        'samples': [{'input': '1 2', 'output': '3'}],
+        'constraints': '整数范围内', 'testcases': [{'input': '1 2', 'output': '3'}],
+        'time_limit': 1, 'memory_limit': 64, 'tags': [],
+    }}
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
+    at.run()
+    _open_page(at, 'problem_detail', problem='P1001')
+
+    assert not at.exception
+    assert at.session_state['prob_id'] == 'P1001'
+    assert any(str(title.value) == 'A + B Problem' for title in at.title)
+
+
 def test_navigation_uses_only_streamlit_router():
     """页面导航交给 Streamlit，Cookie 组件不再干预浏览器历史。"""
     component = (Path(APP).parent / 'app' / 'static' / 'session_cookie' / 'index.html').read_text()
@@ -514,6 +549,21 @@ def test_session_cookie_is_confirmed_before_refresh():
     assert 'oj_browser_session' in component
     assert 'cookieValue(cookieDocument, COOKIE_NAME) === encoded' in component
     assert 'args.clear && (current !== null || legacyCurrent !== null)' in component
+
+
+def test_session_cookie_confirms_existing_value_after_native_page_switch():
+    """组件重新挂载时，Cookie 已存在也必须回报确认，不能永久等待。"""
+    component = (Path(APP).parent / 'app' / 'static' / 'session_cookie' / 'index.html').read_text()
+    guard_start = component.index('if (current !== encoded) {')
+    guard_end = component.index('\n    }', guard_start)
+    confirmation = component.index(
+        'notifyCookieChanged(cookieValue(cookieDocument, COOKIE_NAME) === encoded',
+        guard_start,
+    )
+    assert confirmation > guard_end
+    app_source = Path(APP).read_text()
+    assert 'st.session_state.get("_cookie_confirmed_marker") == cookie_marker' in app_source
+    assert 'st.session_state["_cookie_confirmed_marker"] = cookie_marker' in app_source
 
 
 def test_profile_can_rename_current_user(monkeypatch):

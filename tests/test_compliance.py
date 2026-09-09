@@ -35,6 +35,44 @@ def test_all_business_routes_are_async():
     assert all(inspect.iscoroutinefunction(route.endpoint) for route in routes)
 
 
+def test_required_experiment2_api_surface_is_present():
+    """api.md 的基础接口必须逐个存在；额外接口不影响本项。"""
+    from app.routers import ai, auth, languages, logs, maintenance, problems, users
+
+    actual = {
+        (method, route.path)
+        for module in (ai, auth, languages, logs, maintenance, problems, users, submissions)
+        for route in module.router.routes
+        if isinstance(route, APIRoute)
+        for method in route.methods
+    }
+    required = {
+        ('GET', '/api/problems/'),
+        ('POST', '/api/problems/'),
+        ('GET', '/api/problems/{problem_id}'),
+        ('PUT', '/api/problems/{problem_id}'),
+        ('DELETE', '/api/problems/{problem_id}'),
+        ('POST', '/api/submissions/'),
+        ('GET', '/api/submissions/'),
+        ('GET', '/api/submissions/{submission_id}'),
+        ('PUT', '/api/submissions/{submission_id}/rejudge'),
+        ('POST', '/api/languages/'),
+        ('GET', '/api/languages/'),
+        ('POST', '/api/auth/login'),
+        ('POST', '/api/auth/logout'),
+        ('POST', '/api/users/admin'),
+        ('POST', '/api/users/'),
+        ('GET', '/api/users/'),
+        ('GET', '/api/users/{user_id}'),
+        ('PUT', '/api/users/{user_id}/role'),
+        ('GET', '/api/submissions/{submission_id}/log'),
+        ('PUT', '/api/problems/{problem_id}/log_visibility'),
+        ('GET', '/api/logs/access/'),
+        ('POST', '/api/reset/'),
+    }
+    assert required <= actual
+
+
 @pytest.mark.parametrize('method,path', [
     ('POST', '/api/problems/'), ('POST', '/api/languages/'),
     ('POST', '/api/submissions/'), ('POST', '/api/users/admin'),
@@ -57,6 +95,22 @@ async def test_admin_permission_before_path_and_body_validation(client):
         response = await client.request(method, path, content='{bad',
                                         headers={'Content-Type': 'application/json'})
         assert response.status_code == 403
+
+
+async def test_submission_owner_permission_precedes_secondary_filter_validation(client):
+    """api.md 的 403 > 400 同样适用于提交列表的资源级权限。"""
+    await _setup(client)
+    await client.post('/api/users/', json={'username': 'alice', 'password': 'secret1'})
+    await login(client, 'alice', 'secret1')
+
+    for params in (
+        {'user_id': '1', 'problem_id': '1002', 'page': '0', 'page_size': '1'},
+        {'user_id': '1', 'problem_id': '1002', 'page': 'bad', 'page_size': '1'},
+        {'user_id': '1', 'problem_id': '1002', 'status': 'not-a-status'},
+    ):
+        response = await client.get('/api/submissions/', params=params)
+        assert response.status_code == 403, params
+        assert response.json()['code'] == 403
 
 
 async def test_visibility_cannot_be_changed_through_problem_edit(client):

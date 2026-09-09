@@ -181,6 +181,7 @@ async def test_deepseek_generation_modes_select_model_and_reasoning(client, monk
         "quality": ("deepseek-v4-pro", "enabled", "high"),
     }
     for mode, (model, thinking, effort) in expected.items():
+        calls_before = len(payloads)
         resp = await client.post("/api/ai/problem-tasks/", json={
             "requirement": "出一道题",
             "generation_mode": mode,
@@ -197,6 +198,10 @@ async def test_deepseek_generation_modes_select_model_and_reasoning(client, monk
         assert payload.get("reasoning_effort") == effort
         assert ("temperature" in payload) is (thinking == "disabled")
         assert "max_tokens" not in payload
+        assert len(payloads) - calls_before == (2 if mode == "quality" else 1)
+        if mode == "quality":
+            assert "OJ 题目终审员" in payloads[-1]["messages"][0]["content"]
+            assert "候选 ProblemConfig JSON" in payloads[-1]["messages"][1]["content"]
 
     # 后续对话可以为这一轮单独切换档位。
     parent_id = task["task_id"]
@@ -209,6 +214,55 @@ async def test_deepseek_generation_modes_select_model_and_reasoning(client, monk
     assert refined["generation_mode"] == "fast"
     assert refined["model"] == "deepseek-v4-flash"
     assert payloads[-1]["thinking"] == {"type": "disabled"}
+
+
+async def test_quality_mode_uses_reviewed_problem_and_aggregates_usage(client, monkeypatch):
+    """高质量模式应保存终审修正版，并累计生成与审校两次真实用量。"""
+    import app.services.ai_service as svc
+
+    await login(client, "admin", "admintestpassword")
+    deepseek = {
+        **CONFIG,
+        "provider_url": "https://api.deepseek.com/chat/completions",
+        "model": "deepseek-reasoner",
+    }
+    assert (await client.put("/api/ai/model-config", json=deepseek)).status_code == 200
+    draft = {
+        **GENERATED,
+        "title": "待审校题目",
+        "testcases": [{"id": "1", "input": "2 1 2", "output": "错误答案"}],
+    }
+    reviewed = {
+        **GENERATED,
+        "title": "已审校题目",
+        "testcases": [{"id": "1", "input": "2 1 2", "output": "3"}],
+    }
+    responses = [draft, reviewed]
+    payloads = []
+
+    async def fake(_cfg, payload):
+        payloads.append(payload)
+        result = responses[len(payloads) - 1]
+        return {
+            "choices": [{"message": {"content": json.dumps(result, ensure_ascii=False)}}],
+            "usage": FAKE_USAGE,
+        }
+
+    monkeypatch.setattr(svc, "_request_model", fake)
+    resp = await client.post("/api/ai/problem-tasks/", json={
+        "requirement": "生成后仔细核对答案",
+        "generation_mode": "quality",
+    })
+    task = await _wait_task(client, resp.json()["data"]["task_id"])
+
+    assert task["status"] == "done"
+    assert task["result"]["title"] == "已审校题目"
+    assert task["result"]["testcases"][0]["output"] == "3"
+    assert len(payloads) == 2
+    assert task["usage"]["input_tokens"] == 200
+    assert task["usage"]["output_tokens"] == 400
+    assert task["usage"]["total_tokens"] == 600
+    assert len(task["usage"]["calls"]) == 2
 
 
 async def test_generation_modes_do_not_change_custom_provider(client, monkeypatch):

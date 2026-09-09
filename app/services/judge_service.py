@@ -60,7 +60,7 @@ async def shutdown() -> None:
 
 async def judge_submission(submission_id: int, generation: int) -> None:
     """评测入口：异常兜底，保证任何情况下提交都有终态。"""
-    workdir = Path(tempfile.mkdtemp(prefix="oj-judge-"))
+    workdir = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="oj-judge-"))
     try:
         await _judge(submission_id, generation, workdir)
     except asyncio.CancelledError:
@@ -71,7 +71,7 @@ async def judge_submission(submission_id: int, generation: int) -> None:
         logger.exception("judge failed for submission %s", submission_id)
         await _finish(submission_id, generation, "error", 0, {"UNK": 1}, None, [], error_info="judge internal error")
     finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+        await asyncio.to_thread(shutil.rmtree, workdir, ignore_errors=True)
 
 
 async def _judge(submission_id: int, generation: int, workdir: Path) -> None:

@@ -349,7 +349,7 @@ async def test_invalid_field_values(client, field, bad_value):
 
 
 @pytest.mark.parametrize("bad_id", [
-    "", "..", "../x", "a/b", "a b", "_x", "-x", "abc", "A1", "1-2", "x" * 65, "中文",
+    "", "..", "../x", "a/b", "a b", "_x", "-x", "x.y", "x" * 65, "中文",
 ])
 async def test_invalid_problem_id_rejected(client, bad_id):
     """非法 id → 400，且不得经 body 触达磁盘（路径穿越防护）。"""
@@ -359,7 +359,9 @@ async def test_invalid_problem_id_rejected(client, bad_id):
     assert not (config.PROBLEMS_DIR / f"{bad_id}.json").exists()
 
 
-@pytest.mark.parametrize("good_id", ["0", "1", "1002", "9" * 18])
+@pytest.mark.parametrize("good_id", [
+    "0", "1", "1002", "9" * 64, "P1001", "sum_2", "max_num", "range-query",
+])
 async def test_valid_problem_id_accepted(client, good_id):
     await login(client, "admin", "admintestpassword")
     resp = await client.post("/api/problems/", json={**PROBLEM, "id": good_id})
@@ -504,25 +506,25 @@ async def test_corrupted_file_tolerance(client):
     assert resp.json() == {"code": 500, "msg": "problem config corrupted: 8001", "data": None}
 
 
-async def test_legacy_problem_files_migrate_to_numeric_ids(tmp_path):
-    """升级旧数据时，预置和自定义的非数字题号都迁移为数字文件名。"""
+async def test_documented_string_ids_survive_startup_migration(tmp_path):
+    """api.md 示例 P1001/sum_2 是合法字符串题号，启动时不得改写。"""
     legacy = {**PROBLEM, "id": "P1001", "title": "旧预置题"}
     custom = {**PROBLEM, "id": "old_custom", "title": "旧自定义题"}
     (tmp_path / "P1001.json").write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
     (tmp_path / "old_custom.json").write_text(json.dumps(custom, ensure_ascii=False), encoding="utf-8")
 
     isolated_store = ProblemStore(tmp_path)
-    mapping = await isolated_store.migrate_numeric_ids()
-    assert mapping["P1001"] == "1001"
-    assert mapping["old_custom"].isdigit()
-    assert not (tmp_path / "P1001.json").exists()
-    assert not (tmp_path / "old_custom.json").exists()
-    assert all(path.stem.isdigit() for path in tmp_path.glob("*.json"))
-    assert all(item["id"].isdigit() for item in await isolated_store.list_problems())
+    mapping = await isolated_store.migrate_safe_ids()
+    assert mapping == {}
+    assert (tmp_path / "P1001.json").is_file()
+    assert (tmp_path / "old_custom.json").is_file()
+    assert {item["id"] for item in await isolated_store.list_problems()} == {
+        "P1001", "old_custom",
+    }
 
 
-async def test_orphaned_database_problem_ids_also_migrate(client):
-    """题目已删除时，历史提交、审计和 AI 结果中的题号也必须变成数字。"""
+async def test_only_unsafe_orphaned_problem_ids_are_migrated(client):
+    """安全的历史字符串引用保留；只有无法安全用作文件名的旧值才迁移。"""
     async with SessionLocal() as db:
         db.add(Submission(
             user_id=1, problem_id="legacy_orphan", language="python", code="print(1)",
@@ -534,16 +536,22 @@ async def test_orphaned_database_problem_ids_also_migrate(client):
             user_id=1, requirement="旧任务", problem_id="legacy_orphan",
             result={"id": "generated_legacy", "title": "旧结果"},
         ))
+        db.add(Submission(
+            user_id=1, problem_id="unsafe id", language="python", code="print(2)",
+        ))
         await db.commit()
 
     mapping = await migrate_problem_references({})
-    assert mapping["legacy_orphan"].isdigit()
-    assert mapping["generated_legacy"].isdigit()
+    assert "legacy_orphan" not in mapping
+    assert "generated_legacy" not in mapping
+    assert mapping["unsafe id"].isdigit()
     async with SessionLocal() as db:
         submission = await db.get(Submission, 1)
+        unsafe_submission = await db.get(Submission, 2)
         access = await db.get(AccessLog, 1)
         task = await db.get(AiTask, 1)
-        assert submission.problem_id == mapping["legacy_orphan"]
-        assert access.problem_id == mapping["legacy_orphan"]
-        assert task.problem_id == mapping["legacy_orphan"]
-        assert task.result["id"] == mapping["generated_legacy"]
+        assert submission.problem_id == "legacy_orphan"
+        assert unsafe_submission.problem_id == mapping["unsafe id"]
+        assert access.problem_id == "legacy_orphan"
+        assert task.problem_id == "legacy_orphan"
+        assert task.result["id"] == "generated_legacy"

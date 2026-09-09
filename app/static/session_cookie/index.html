@@ -56,8 +56,11 @@ window.addEventListener("message", (event) => {
     const encoded = encodeURIComponent(args.token);
     if (current !== encoded) {
       cookieDocument.cookie = `${COOKIE_NAME}=${encoded}; Path=/; Max-Age=${Number(args.max_age) || 0}; SameSite=Lax${secure}`;
-      notifyCookieChanged(cookieValue(cookieDocument, COOKIE_NAME) === encoded, args.marker || "");
     }
+    // Streamlit 原生页面切换会重新挂载组件，但 Cookie 此时通常已经存在。
+    // 每次挂载都回报当前状态，否则新页面拿到 default=None 后会永久停在
+    // “正在安全保存登录状态…”。组件值稳定后 Streamlit 不会重复触发 rerun。
+    notifyCookieChanged(cookieValue(cookieDocument, COOKIE_NAME) === encoded, args.marker || "");
   } else if (args.clear && (current !== null || legacyCurrent !== null)) {
     if (current !== null) {
       cookieDocument.cookie = `${COOKIE_NAME}=; Path=/; Max-Age=0; SameSite=Lax${secure}`;

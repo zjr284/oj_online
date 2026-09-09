@@ -62,7 +62,7 @@ _ACTIVE_PAGES: dict[str, object] = {}
 
 
 def _valid_problem_id(value: object) -> bool:
-    return bool(re.fullmatch(r"[0-9]{1,18}", str(value)))
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", str(value)))
 
 
 def _supports_deepseek_modes(provider_url: object) -> bool:
@@ -88,6 +88,7 @@ def _clear_session(*, clear_browser_cookie: bool = True):
                 "audit_confirm_delete", "audit_flash"):
         st.session_state.pop(key, None)
     st.session_state.pop("_session_restore_error", None)
+    st.session_state.pop("_cookie_confirmed_marker", None)
     if clear_browser_cookie:
         st.session_state["_clear_browser_session_cookie"] = True
     try:
@@ -450,7 +451,8 @@ def _ai_mode_radio(*, current: str | None, disabled: bool, key: str):
         horizontal=True,
         disabled=disabled,
         key=key,
-        help="DeepSeek 官方接口支持：极速适合常规题，均衡兼顾速度与推理，高质量适合困难题。",
+        help=("DeepSeek 官方接口支持：极速适合常规题，均衡兼顾速度与推理；"
+              "高质量适合困难题，并会在生成后额外进行一轮答案与测试数据审校。"),
     )
 
 
@@ -888,6 +890,9 @@ def page_audit_logs():
 # ---------- 任务 2：题目页面组 ----------
 
 def page_problems():
+    # st.switch_page(query_params=...) 会把目标参数短暂写进当前历史项；
+    # 浏览器返回列表时清掉详情页遗留参数，保持地址栏和页面状态一致。
+    st.query_params.pop("problem", None)
     st.session_state["prob_view"] = "list"
     st.session_state.pop("prob_id", None)
     _problem_list()
@@ -1100,7 +1105,7 @@ def _problem_form():
     # —— 提交前格式检查（任务 2）——
     errors = []
     if not _valid_problem_id(pid_in.strip()):
-        errors.append("题目 ID 必须是数字。")
+        errors.append("题目 ID 需以字母或数字开头，且只能包含字母、数字、下划线或连字符（最多 64 个字符）。")
     if not title.strip():
         errors.append("标题不能为空。")
     for name, value in (("题目描述", description), ("输入格式", input_description),
@@ -1594,6 +1599,8 @@ def _ai_task_detail():
 
 
 def page_ai():
+    # 同上：从任务详情返回首页时不保留无意义的 task 参数。
+    st.query_params.pop("task", None)
     st.session_state["ai_view"] = "home"
     st.session_state.pop("ai_task_id", None)
     _ai_home()
@@ -1811,11 +1818,17 @@ def main():
             browser_token = None
         cookie_confirmed = (
             browser_token == token
+            or st.session_state.get("_cookie_confirmed_marker") == cookie_marker
             or (isinstance(cookie_result, dict)
                 and cookie_result.get("present") is True
                 and cookie_result.get("marker") == cookie_marker)
         )
-        if not cookie_confirmed:
+        if cookie_confirmed:
+            # 原生页面切换会重新挂载组件并暂时返回 None，但 Streamlit
+            # session_state 会保留。记住已确认的令牌摘要，避免每次切页
+            # 都重新阻断；整页刷新时仍由 st.context.cookies 重新校验。
+            st.session_state["_cookie_confirmed_marker"] = cookie_marker
+        else:
             if (isinstance(cookie_result, dict)
                     and cookie_result.get("marker") == cookie_marker
                     and cookie_result.get("present") is False):
