@@ -255,12 +255,22 @@ async def test_access_logs_pagination(client):
     # 按 id 降序（最后一条为 bob 的 403），两页合并为全部且无重叠
     assert [r["status"] for r in page1 + page2] == ["403", "200", "200", "200"]
 
-    # 参数错误：仅 page / page=0 / page=-1 / page_size=0 / 非数字
+    # Streamlit 显式请求总数，以显示总页数和指定页跳转。
+    result = (await client.get("/api/logs/access/", params={
+        "username": "alice", "page": 1, "page_size": 2, "include_total": True,
+    })).json()["data"]
+    assert result["total"] == 3
+    assert len(result["logs"]) == 2
+    assert all(row["username"] == "alice" for row in result["logs"])
+
+    # 参数错误：缺参、非正数、非数字及会让 SQLite offset 溢出的极端值。
     for params in (
         {"page": 1},
         {"page": 0, "page_size": 2},
         {"page": -1, "page_size": 2},
         {"page_size": 0},
+        {"page_size": 101},
+        {"page": 10_000_001, "page_size": 2},
         {"page": "abc", "page_size": 2},
     ):
         assert (await client.get("/api/logs/access/", params=params)).status_code == 400

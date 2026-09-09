@@ -179,6 +179,13 @@ def _fake_api(monkeypatch, state):
                 'constraints': '整数范围内', 'testcases': [{'input': '1 2', 'output': '3'}],
                 'time_limit': 1, 'memory_limit': 64, 'tags': [],
             }
+        elif path == '/api/users/':
+            users = state.get('users', [])
+            params = kwargs.get('params') or {}
+            page = int(params.get('page', 1))
+            page_size = int(params.get('page_size', len(users) or 1))
+            start = (page - 1) * page_size
+            data = {'total': len(users), 'users': users[start:start + page_size]}
         elif path == '/api/users/2':
             data = {
                 'user_id': '2', 'username': state.get('username', 'alice'), 'role': 'user',
@@ -206,7 +213,14 @@ def _fake_api(monkeypatch, state):
                 'generation_mode': kwargs['json'].get('generation_mode'),
             }
         elif path == '/api/ai/problem-tasks/':
-            data = []
+            rows = state.get('ai_tasks', [])
+            params = kwargs.get('params') or {}
+            page = int(params.get('page', 1))
+            page_size = int(params.get('page_size', len(rows) or 1))
+            start = (page - 1) * page_size
+            page_rows = rows[start:start + page_size]
+            data = ({'total': len(rows), 'tasks': page_rows}
+                    if params.get('include_total') else page_rows)
         elif path == '/api/ai/problem-tasks/21':
             data = {
                 'task_id': 21, 'status': 'pending', 'progress': 0,
@@ -248,14 +262,18 @@ def _fake_api(monkeypatch, state):
                     'generation_mode': state.get('generation_mode'),
                     'parent_task_id': state.get('parent_task_id'),
                     'usage': {'input_tokens': 100, 'output_tokens': 20, 'total_tokens': 120,
-                              'cost': 0.1, 'currency': 'CNY', 'price_source': 'provider'}}
+                              'cost': state.get('usage_cost', 0.1),
+                              'currency': 'CNY', 'price_source': 'provider'}}
         elif path == '/api/logs/access/':
             rows = state.get('audit_logs', [])
             params = kwargs.get('params') or {}
             page = int(params.get('page', 1))
             page_size = int(params.get('page_size', len(rows) or 1))
             start = (page - 1) * page_size
-            data = rows[start:start + page_size]
+            page_rows = rows[start:start + page_size]
+            data = ({'total': len(rows), 'logs': page_rows}
+                    if params.get('include_total') and not state.get('legacy_audit')
+                    else page_rows)
         elif path.startswith('/api/logs/access/') and method == 'DELETE':
             log_id = path.rsplit('/', 1)[-1]
             state['audit_logs'] = [
@@ -264,6 +282,22 @@ def _fake_api(monkeypatch, state):
             data = {'log_id': log_id}
         elif path.endswith('/log'):
             data = {'score': 10, 'counts': 40}
+        elif path == '/api/submissions/':
+            rows = state.get('submissions', [])
+            params = kwargs.get('params') or {}
+            state['last_submission_params'] = dict(params)
+            filtered = [
+                row for row in rows
+                if (not params.get('status') or row.get('status') == params['status'])
+                and (not params.get('problem_id')
+                     or str(row.get('problem_id')) == str(params['problem_id']))
+                and (not params.get('user_id')
+                     or str(row.get('user_id')) == str(params['user_id']))
+            ]
+            page = int(params.get('page', 1))
+            page_size = int(params.get('page_size', len(filtered) or 1))
+            start = (page - 1) * page_size
+            data = {'total': len(filtered), 'submissions': filtered[start:start + page_size]}
         elif path == '/api/submissions/1':
             data = {'submission_id': '1', 'status': 'success', 'score': 10, 'counts': 40,
                     'compile_info': {'result': 'success', 'message': ''},
@@ -389,7 +423,7 @@ def test_successful_login_does_not_put_credentials_in_url(monkeypatch):
     assert 'oj_s' not in at.query_params and 'oj_u' not in at.query_params
 
 
-def test_audit_rows_show_details_and_delete_independently(monkeypatch):
+def test_audit_rows_offer_delete_without_redundant_detail_button(monkeypatch):
     state = {'audit_logs': [{
         'log_id': '41', 'username': 'alice', 'user_id': '99', 'problem_id': '1001',
         'action': 'view_logs', 'status': '200', 'time': '2026-09-06 10:00:00',
@@ -404,17 +438,10 @@ def test_audit_rows_show_details_and_delete_independently(monkeypatch):
     _open_page(at, 'audit')
 
     assert {'alice', 'bob'} <= {str(item.value) for item in at.text}
-    assert [button.label for button in at.button].count('查看详情') == 2
+    assert '查看详情' not in [button.label for button in at.button]
     assert [button.label for button in at.button].count('删除') == 2
 
-    # 每条日志末尾的详情按钮只展示对应记录，不发生删除。
-    next(button for button in at.button if button.label == '查看详情').click().run()
-    detail_text = {str(item.value) for item in at.text}
-    assert {'41', 'alice', '1001', '查看评测日志'} <= detail_text
-    assert not any(method == 'DELETE' for method, _path, _body in state['requests'])
-
     # 点击第二条记录的删除按钮，经二次确认后只删第二条。
-    _open_page(at, 'audit')  # 关闭上方详情弹窗
     delete_buttons = [button for button in at.button if button.label == '删除']
     delete_buttons[1].click().run()
     next(button for button in at.button if button.label == '确认删除').click().run()
@@ -430,7 +457,7 @@ def test_audit_pagination_does_not_skip_the_twenty_first_log(monkeypatch):
         {'log_id': str(index), 'username': f'user{index}', 'user_id': str(index),
          'problem_id': '1001', 'action': 'view_logs', 'status': '200',
          'time': '2026-09-06 10:00:00'}
-        for index in range(1, 22)
+        for index in range(1, 42)
     ]}
     _fake_api(monkeypatch, state)
     at = AppTest.from_file(APP, default_timeout=30)
@@ -443,6 +470,140 @@ def test_audit_pagination_does_not_skip_the_twenty_first_log(monkeypatch):
     next(button for button in at.button if button.label == '下一页').click().run()
     second_page = {str(item.value) for item in at.text}
     assert 'user21' in second_page and 'user20' not in second_page
+
+    page_text = ' '.join(str(item.value) for item in at.markdown)
+    assert '/ **3** 页' in page_text
+    next(item for item in at.number_input if item.label == '跳转到页').set_value(3)
+    next(button for button in at.button if button.label == '跳转').click().run()
+    third_page = {str(item.value) for item in at.text}
+    assert 'user41' in third_page and 'user40' not in third_page
+
+
+def test_audit_page_accepts_legacy_list_response_until_backend_restarts(monkeypatch):
+    """前后端短暂版本错位时，旧数组响应不能让审计页直接崩溃。"""
+    state = {'legacy_audit': True, 'audit_logs': [
+        {'log_id': str(index), 'username': f'user{index}', 'user_id': str(index),
+         'problem_id': '1001', 'action': 'view_logs', 'status': '200',
+         'time': '2026-09-06 10:00:00'}
+        for index in range(1, 22)
+    ]}
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'root', 'user_id': '1', 'role': 'admin'}
+    at.run()
+    _open_page(at, 'audit')
+
+    assert not at.exception
+    assert 'user20' in {str(item.value) for item in at.text}
+    assert '/ **2** 页' in ' '.join(str(item.value) for item in at.markdown)
+
+
+def test_problem_list_shows_total_pages_and_supports_page_jump(monkeypatch):
+    state = {'problems': [
+        {'id': str(1000 + index), 'title': f'题目{index}'}
+        for index in range(1, 42)
+    ]}
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
+    at.run()
+
+    assert '/ **3** 页' in ' '.join(str(item.value) for item in at.markdown)
+    next(item for item in at.number_input if item.label == '跳转到页').set_value(3)
+    next(button for button in at.button if button.label == '跳转').click().run()
+    assert any(button.label == '题目41' for button in at.button)
+    assert not any(button.label == '题目40' for button in at.button)
+
+
+def test_submission_status_only_filter_and_page_jump(monkeypatch):
+    state = {'submissions': [
+        {'submission_id': str(index), 'problem_id': '1001', 'user_id': str(index),
+         'language': 'python', 'status': 'success', 'score': 10,
+         'submit_time': '2026-09-09 10:00:00'}
+        for index in range(1, 42)
+    ]}
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'root', 'user_id': '1', 'role': 'admin'}
+    at.run()
+    _open_page(at, 'submissions')
+
+    next(item for item in at.selectbox if item.label == '状态').set_value('success').run()
+    assert state['last_submission_params'] == {
+        'status': 'success', 'page': 1, 'page_size': 20,
+    }
+    assert '/ **3** 页' in ' '.join(str(item.value) for item in at.markdown)
+    next(item for item in at.number_input if item.label == '跳转到页').set_value(3)
+    next(button for button in at.button if button.label == '跳转').click().run()
+    assert state['last_submission_params']['page'] == 3
+    assert '#41' in ' '.join(str(item.value) for item in at.markdown)
+
+
+def test_submission_filters_survive_detail_and_back(monkeypatch):
+    state = {'submissions': [
+        {'submission_id': '1', 'problem_id': '1001', 'user_id': '2',
+         'language': 'python', 'status': 'success', 'score': 10,
+         'submit_time': '2026-09-09 10:00:00'},
+        {'submission_id': '2', 'problem_id': '1002', 'user_id': '3',
+         'language': 'python', 'status': 'error', 'score': 0,
+         'submit_time': '2026-09-09 10:01:00'},
+    ]}
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'root', 'user_id': '1', 'role': 'admin'}
+    at.run()
+    _open_page(at, 'submissions')
+
+    next(item for item in at.selectbox if item.label == '状态').set_value('success').run()
+    next(item for item in at.text_input if item.label == '题目 ID（可选）').set_value('1001').run()
+    next(button for button in at.button if button.label == '打开详情').click().run()
+    next(button for button in at.button if button.label == '← 返回列表').click().run()
+
+    assert not at.exception
+    assert next(item for item in at.selectbox if item.label == '状态').value == 'success'
+    assert next(item for item in at.text_input if item.label == '题目 ID（可选）').value == '1001'
+    assert state['last_submission_params'] == {
+        'status': 'success', 'problem_id': '1001', 'page': 1, 'page_size': 20,
+    }
+
+
+def test_user_management_shows_total_pages_and_supports_page_jump(monkeypatch):
+    state = {'users': [
+        {'user_id': str(index), 'username': f'user{index}', 'role': 'user',
+         'join_time': '2026-09-09', 'submit_count': 0, 'resolve_count': 0}
+        for index in range(1, 42)
+    ]}
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'root', 'user_id': '1', 'role': 'admin'}
+    at.run()
+    _open_page(at, 'users')
+
+    assert '/ **3** 页' in ' '.join(str(item.value) for item in at.markdown)
+    next(item for item in at.number_input if item.label == '跳转到页').set_value(3)
+    next(button for button in at.button if button.label == '跳转').click().run()
+    table_text = ' '.join(str(item.value) for item in at.markdown)
+    assert 'user41' in table_text and 'user40' not in table_text
+
+
+def test_ai_task_list_shows_total_pages_and_supports_page_jump(monkeypatch):
+    state = {'ai_tasks': [
+        {'task_id': index, 'status': 'done', 'progress': 1,
+         'generation_mode': 'fast', 'model': 'deepseek-v4-flash',
+         'created_at': '2026-09-09 10:00:00'}
+        for index in range(1, 42)
+    ]}
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
+    at.run()
+    _open_page(at, 'ai')
+
+    assert '/ **3** 页' in ' '.join(str(item.value) for item in at.markdown)
+    next(item for item in at.number_input if item.label == '跳转到页').set_value(3)
+    next(button for button in at.button if button.label == '跳转').click().run()
+    task_rows = ' '.join(str(item.value) for item in at.markdown)
+    assert '#41' in task_rows and '#40' not in task_rows
 
 
 def test_problem_title_is_the_detail_link(monkeypatch):
@@ -475,12 +636,16 @@ def test_only_admin_can_set_problem_log_visibility(monkeypatch):
     user_app.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
     user_app.run()
     _open_page(user_app, 'problem_detail', problem='1001')
+    assert '编辑题目' not in _registered_page_titles(user_app)
+    assert not any(button.label == '✏️ 编辑题目' for button in user_app.button)
     assert not any(radio.label == '谁可以查看日志详情' for radio in user_app.radio)
 
     admin_app = AppTest.from_file(APP, default_timeout=30)
     admin_app.session_state['me'] = {'username': 'root', 'user_id': '1', 'role': 'admin'}
     admin_app.run()
     _open_page(admin_app, 'problem_detail', problem='1001')
+    assert '编辑题目' in _registered_page_titles(admin_app)
+    assert any(button.label == '✏️ 编辑题目' for button in admin_app.button)
     setting = next(radio for radio in admin_app.radio if radio.label == '谁可以查看日志详情')
     setting.set_value(True).run()
     next(button for button in admin_app.button if button.label == '保存日志权限设置').click().run()
@@ -592,12 +757,33 @@ def test_ai_progress_and_cancel_keep_current_page(monkeypatch):
     assert not at.exception
     assert not any('http-equiv="refresh"' in str(md.value) for md in at.markdown)
     assert any('中断任务' in b.label for b in at.button)
-    assert any('Token' in m.label for m in at.metric)
+    metrics = {item.label: str(item.value) for item in at.metric}
+    assert metrics == {
+        '输入 Token': '100', '输出 Token': '20', '总 Token': '120', '费用': '0.1 CNY',
+    }
+    visible_copy = (
+        ' '.join(str(item.value) for item in at.markdown)
+        + ' '.join(str(item.value) for item in at.caption)
+    )
+    assert '计价依据' not in visible_copy
     next(b for b in at.button if '中断任务' in b.label).click().run()
     assert not at.exception
     assert state['status'] == 'cancelled'
     assert at.session_state['ai_task_id'] == 7
     assert any('已中断' in str(info.value) for info in at.info)
+
+
+def test_ai_usage_displays_zero_cost_instead_of_blank_currency(monkeypatch):
+    state = {'usage_cost': 0}
+    _fake_api(monkeypatch, state)
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state['me'] = {'username': 'alice', 'user_id': '2', 'role': 'user'}
+    at.run()
+    _open_page(at, 'ai_task', task='7')
+
+    assert not at.exception
+    cost = next(item for item in at.metric if item.label == '费用')
+    assert str(cost.value) == '0 CNY'
 
 
 def test_failed_ai_task_can_restart_as_a_new_task(monkeypatch):

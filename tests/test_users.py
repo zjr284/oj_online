@@ -409,12 +409,14 @@ async def test_list_users_sorted_by_submit_count(client):
 
 async def test_list_users_invalid_pagination(client):
     await login(client, "admin", "admintestpassword")
-    # 仅 page → 400；非法值（0 / 负数 / 非数字）→ 400
+    # 仅 page、非正数、非数字和极端大值均返回 400。
     for params in (
         {"page": 1},
         {"page": 0, "page_size": 2},
         {"page": -1, "page_size": 2},
         {"page_size": 0},
+        {"page_size": 101},
+        {"page": 10_000_001, "page_size": 2},
         {"page": "abc", "page_size": 2},
     ):
         assert (await client.get("/api/users/", params=params)).status_code == 400

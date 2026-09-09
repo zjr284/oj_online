@@ -249,8 +249,8 @@ async def test_unauthorized_all_endpoints(client, method, path, body):
     assert resp.json() == {"code": 401, "msg": "not logged in", "data": None}
 
 
-async def test_normal_user_full_permissions(client):
-    """普通用户可增/改/查；删除 → 403，且权限判断先于存在性判断（403 优先于 404）。"""
+async def test_normal_user_cannot_edit_or_delete_problems(client):
+    """普通用户可新增和查看，但编辑/删除必须由管理员完成。"""
     await login(client, "admin", "admintestpassword")
     await client.post("/api/users/", json={"username": "alice", "password": "pw123456"})
     await login(client, "alice", "pw123456")
@@ -258,11 +258,14 @@ async def test_normal_user_full_permissions(client):
     resp = await client.post("/api/problems/", json={**PROBLEM, "id": "3001"})
     assert resp.status_code == 200
     resp = await client.put("/api/problems/3001", json={**PROBLEM, "id": "3001", "title": "改"})
-    assert resp.status_code == 200
-    assert (await client.get("/api/problems/3001")).json()["data"]["title"] == "改"
+    assert resp.status_code == 403
+    assert (await client.get("/api/problems/3001")).json()["data"]["title"] == "两数之和"
     assert (await client.get("/api/problems/")).status_code == 200
 
-    # 删除不存在/存在的题目都是 403（权限判断先于存在性判断）
+    # 编辑/删除不存在或存在的题目都是 403（权限判断先于资源检查）。
+    assert (await client.put(
+        "/api/problems/9999", json={**PROBLEM, "id": "9999"},
+    )).status_code == 403
     resp = await client.delete("/api/problems/9999")
     assert resp.status_code == 403
     resp = await client.delete("/api/problems/3001")

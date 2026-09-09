@@ -6,7 +6,7 @@ PUT /api/ai/model-config 与 POST /api/ai/problem-tasks/。
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from app.schemas.problem import PROBLEM_ID_RE
 
 
@@ -36,6 +36,13 @@ class ModelConfigIn(BaseModel):
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("put credentials only in api_key; URL must not contain credentials, query or fragment")
         return value
+
+    @model_validator(mode="after")
+    def complete_manual_price_pair(self):
+        """手工计价必须同时提供输入/输出单价，避免静默显示未知。"""
+        if (self.input_price is None) != (self.output_price is None):
+            raise ValueError("input_price and output_price must be provided together")
+        return self
 
 
 class AiTaskIn(BaseModel):

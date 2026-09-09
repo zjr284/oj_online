@@ -394,8 +394,8 @@ async def test_submit_response_exact(client):
     await wait_status(client, body["data"]["submission_id"])
 
 
-async def test_list_requires_primary_condition(client):
-    """api.md：user_id/problem_id 一级条件不可全空 → 400（401 仍最优先）。"""
+async def test_list_requires_at_least_one_filter_and_allows_status_only(client):
+    """管理员可仅按状态筛选；所有条件都留空仍拒绝无意的全表查询。"""
     # 未登录：401 优先于 400
     resp = await client.get("/api/submissions/")
     assert resp.status_code == 401
@@ -404,9 +404,12 @@ async def test_list_requires_primary_condition(client):
     resp = await client.get("/api/submissions/")
     assert resp.status_code == 400
     assert resp.json()["data"] is None
-    # 只给二级条件 status 也不行
-    resp = await client.get("/api/submissions/", params={"status": "success"})
-    assert resp.status_code == 400
+    # 用户 ID 和题目 ID 留空时，status 仍应独立生效。
+    resp = await client.get("/api/submissions/", params={
+        "user_id": "   ", "problem_id": "", "status": " success ",
+    })
+    assert resp.status_code == 200
+    assert resp.json()["data"] == {"total": 0, "submissions": []}
 
     # 普通用户同样受限
     await client.post("/api/users/", json={"username": "alice", "password": "pw123456"})
@@ -443,6 +446,8 @@ async def test_list_pagination_semantics(client):
     for bad in ({"problem_id": "1002", "page": 0, "page_size": 1},
                 {"problem_id": "1002", "page": "x", "page_size": 1},
                 {"problem_id": "1002", "page": 1, "page_size": 0},
+                {"problem_id": "1002", "page": 1, "page_size": 101},
+                {"problem_id": "1002", "page": 10_000_001, "page_size": 1},
                 {"problem_id": "1002", "page": 1, "page_size": "x"}):
         resp = await client.get("/api/submissions/", params=bad)
         assert resp.status_code == 400, bad

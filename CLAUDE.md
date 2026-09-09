@@ -42,17 +42,20 @@ AI 命题（model-config/problem-tasks/SSE 进度/取消/失败重新开始/用�
 R3：模型调用期间 ticker 每 2s 推进度、cancel 推 final(cancelled) 即时通知观察者；
 DeepSeek 三档模式：极速 Flash/关闭思考、均衡 Flash/low、高质量 Pro/high；
 完成结果可继续对话修改，父任务串成不可变版本链并保持题目 ID，可回看任意旧版本；
-费用 = 用户填写价格或接口返回 usage.cost，未填且接口未返回则 cost=null 标注；
-前端提示不同模型不同时段价格可能不同）。
+费用优先使用接口返回的 usage.cost；DeepSeek 官方接口按实际模型、峰谷时段和缓存拆分自动计算，
+其他服务使用成对填写的价格，条件不足时 cost=null）。
 
 实现细节备忘：
-- 题目/语言不存在 → 404（api.md 语义）；登录用户可创建题目、注册语言和使用 AI 命题，删除题目及修改日志公开策略仅管理员。
+- 题目/语言不存在 → 404（api.md 语义）；登录用户可创建题目、注册语言和使用 AI 命题，编辑/删除题目及修改日志公开策略仅管理员。
 - 提交限流 `config.SUBMIT_RATE_LIMIT`（环境变量 `OJ_SUBMIT_RATE_LIMIT`），测试用 monkeypatch 收紧。
 - log 接口：details 仅管理员/公开题目可见；本人看未公开题目省略 details；
   403（已登录无权）与 200 都记 AccessLog；提交不存在返回 404 且不记审计。
-- GET /api/logs/access/ 返回含 log_id/username 的纯数组（无 total），保留 user_id 兼容；
-  Streamlit 审计页按用户名展示和筛选，每行末尾有详情/删除操作，当前页满时用同页长探测下一页；
+- GET /api/logs/access/ 默认返回含 log_id/username 的纯数组，保留 user_id 兼容；
+  `include_total=true` 返回 total/logs，Streamlit 审计页用它显示总页数和指定页跳转；
+  每行末尾仅保留需二次确认的删除操作；
   DELETE /api/logs/access/{log_id} 仅管理员可用。
+- Streamlit 题目、用户、评测、审计和 AI 任务列表统一显示当前页/总页数并支持指定页跳转；
+  管理员评测列表可仅使用 status 筛选。
 - 题目详情页力扣式双栏：左侧题面 tabs，右侧内嵌提交面板（语言/代码按题目 id 缓存 widget key），
   提交后就地轮询结果；独立「提交评测」导航页已移除，代码提交统一走题目详情内嵌面板。
 - Streamlit AppTest 冒烟测试用 monkeypatch 把 OJ_API_BASE 指向死端口隔离真实后端，
@@ -66,7 +69,7 @@ DeepSeek 三档模式：极速 Flash/关闭思考、均衡 Flash/low、高质量
   模型请求默认不继承系统代理，需要时用 OJ_AI_TRUST_ENV=1 开启。
 - success 表示评测正常返回结果，WA/TLE/MLE/RE 均属于 success；全部 AC 才增加 resolve_count。
   error 用于 CE 或评测系统错误。题目显式限制优先于语言限制，再回退至系统默认。
-- 题目编辑省略 public_cases 时保留原策略；普通用户不能经题目增改接口更改公开策略。
+- 题目编辑省略 public_cases 时保留原策略；普通用户不能编辑题目，也不能在新建题目时更改公开策略。
 - AuthenticatedRoute 在解析请求体之前认证，确保畸形 JSON/非法路径也遵循 401 > 403 > 400。
 - 提交列表 error/pending 条目只返回 {submission_id, status}（api.md）；submission_id、user_id 均为字符串。
 - api.md 字段语义（2026-09 审计后对齐）：`counts` = 本题总分数（测试点数目×10，DB 列 total_score）；

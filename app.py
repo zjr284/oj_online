@@ -13,6 +13,7 @@
 
 import html
 import json
+import math
 import os
 import re
 import time
@@ -85,7 +86,12 @@ def _clear_session(*, clear_browser_cookie: bool = True):
                 "sub_view", "sub_id", "confirm_delete",
                 "ai_view", "ai_task_id", "audit_user", "audit_username",
                 "ai_retry_notice", "ai_refine_notice", "audit_problem", "audit_page",
-                "audit_confirm_delete", "audit_flash"):
+                "audit_confirm_delete", "audit_flash", "user_page", "submission_page",
+                "sub_filter_status", "sub_filter_problem", "sub_filter_user",
+                "submission_filter_status", "submission_filter_problem",
+                "submission_filter_user", "_submission-status-widget",
+                "_submission-problem-widget", "_submission-user-widget",
+                "_sub_preset_problem", "problem_page", "ai_task_page"):
         st.session_state.pop(key, None)
     st.session_state.pop("_session_restore_error", None)
     st.session_state.pop("_cookie_confirmed_marker", None)
@@ -456,6 +462,35 @@ def _ai_mode_radio(*, current: str | None, disabled: bool, key: str):
     )
 
 
+def _pagination_controls(*, state_key: str, total: int, page_size: int, key_prefix: str) -> None:
+    """统一分页条：上一页、当前/总页数、指定页跳转、下一页。"""
+    total_pages = max(1, math.ceil(max(total, 0) / page_size))
+    current = max(1, int(st.session_state.get(state_key, 1)))
+    if current > total_pages:
+        st.session_state[state_key] = total_pages
+        st.rerun()
+
+    prev_col, info_col, jump_col, go_col, next_col = st.columns([1, 1.5, 1.5, 0.8, 1])
+    if prev_col.button(
+        "上一页", disabled=current <= 1, width="stretch", key=f"{key_prefix}-prev",
+    ):
+        st.session_state[state_key] = current - 1
+        st.rerun()
+    info_col.markdown(f"第 **{current}** / **{total_pages}** 页")
+    target = jump_col.number_input(
+        "跳转到页", min_value=1, max_value=total_pages, value=current, step=1,
+        key=f"{key_prefix}-target-{current}-{total_pages}",
+    )
+    if go_col.button("跳转", width="stretch", key=f"{key_prefix}-go"):
+        st.session_state[state_key] = int(target)
+        st.rerun()
+    if next_col.button(
+        "下一页", disabled=current >= total_pages, width="stretch", key=f"{key_prefix}-next",
+    ):
+        st.session_state[state_key] = current + 1
+        st.rerun()
+
+
 def _verdict_pill(result: str, count) -> str:
     """测试点统计彩色胶囊（AC 绿 / WA·RE·CE 红 / TLE·MLE 黄）。"""
     r = str(result or "UNK").upper()
@@ -637,8 +672,12 @@ def page_profile():
 
 def page_admin_users():
     st.title("🛠 用户管理")
+    page_size = 20
+    st.session_state.setdefault("user_page", 1)
     try:
-        data = api("GET", "/api/users/")
+        data = api("GET", "/api/users/", params={
+            "page": st.session_state["user_page"], "page_size": page_size,
+        })
     except ApiError as e:
         friendly_error(e)
         return
@@ -655,6 +694,10 @@ def page_admin_users():
             for u in users)
         st.markdown(_html_table(["ID", "用户名", "角色", "注册时间", "提交数", "通过题数"], rows),
                     unsafe_allow_html=True)
+    _pagination_controls(
+        state_key="user_page", total=int(data.get("total", 0)), page_size=page_size,
+        key_prefix="users-page",
+    )
 
     st.divider()
     if not users:
@@ -759,30 +802,10 @@ def page_languages():
     st.rerun()
 
 
-@st.dialog("访问日志详情")
-def _show_access_log_detail(row: dict):
-    """在当前页展示审计记录，不创建新页面或改变浏览器历史。"""
-    action_text = {"view_logs": "查看评测日志"}.get(row.get("action"), row.get("action") or "—")
-    status = str(row.get("status") or "")
-    fields = (
-        ("日志 ID", row.get("log_id")),
-        ("用户名", row.get("username") or "—"),
-        ("题目 ID", row.get("problem_id") or "—"),
-        ("行为", action_text),
-        ("访问结果", ACCESS_TEXT.get(status, status or "—")),
-        ("发生时间", row.get("time") or "—"),
-    )
-    for label, value in fields:
-        label_col, value_col = st.columns([1, 2])
-        label_col.markdown(f"**{label}**")
-        value_col.text(str(value))
-
-
 def page_audit_logs():
     """Step 5 日志与权限：访问审计列表（仅管理员，GET /api/logs/access/）。
 
-    接口返回纯数组无 total：当前页满时额外探测下一页；
-    筛选/页码存 session_state。
+    前端请求 total 以展示总页数；默认 API 响应仍兼容课程规定的数组。
     """
     st.title("🛡 访问审计")
     st.caption("记录所有评测日志查看行为（允许与拒绝）· 仅管理员可见")
@@ -808,19 +831,39 @@ def page_audit_logs():
         st.rerun()
 
     page_size = 20
-    params = {"page": st.session_state["audit_page"], "page_size": page_size}
+    params = {
+        "page": st.session_state["audit_page"], "page_size": page_size,
+        "include_total": True,
+    }
     if st.session_state["audit_username"]:
         params["username"] = st.session_state["audit_username"]
     if st.session_state["audit_problem"]:
         params["problem_id"] = st.session_state["audit_problem"]
     try:
-        rows = api("GET", "/api/logs/access/", params=params)
-        # 后端使用 page_size 计算 offset，不能用“多取 1 条”，否则
-        # 下一页会永久跳过一条记录。当前页满时用同一页长探测下页。
-        has_next = False
-        if len(rows) == page_size:
-            probe_params = {**params, "page": st.session_state["audit_page"] + 1}
-            has_next = bool(api("GET", "/api/logs/access/", params=probe_params))
+        data = api("GET", "/api/logs/access/", params=params)
+        if isinstance(data, dict):
+            rows = data.get("logs", [])
+            total = int(data.get("total", 0))
+        elif isinstance(data, list):
+            # 平滑兼容尚未重启的旧后端：旧版会忽略
+            # include_total 并返回当前页数组。只在此兼容分支中
+            # 额外获取一次筛选后全量日志，避免页面直接崩溃。
+            rows = data
+            legacy_params = {
+                key: value for key, value in params.items()
+                if key not in {"page", "page_size", "include_total"}
+            }
+            legacy_data = api(
+                "GET", "/api/logs/access/", params=legacy_params or None,
+            )
+            if isinstance(legacy_data, dict):
+                total = int(legacy_data.get("total", len(rows)))
+            elif isinstance(legacy_data, list):
+                total = len(legacy_data)
+            else:
+                raise ApiError(0, "访问审计接口返回了无法识别的数据")
+        else:
+            raise ApiError(0, "访问审计接口返回了无法识别的数据")
     except ApiError as e:
         friendly_error(e)
         return
@@ -828,14 +871,14 @@ def page_audit_logs():
     if not rows:
         st.info("暂无审计记录。")
     else:
-        header = st.columns([1.35, 0.8, 1.05, 0.9, 1.65, 1.5])
+        header = st.columns([1.35, 0.8, 1.05, 0.9, 1.65, 0.8])
         for col, label in zip(header, ("用户名", "题目", "行为", "结果", "时间", "操作")):
             col.markdown(f"**{label}**")
         for row in rows:
             log_id = str(row["log_id"])
             with st.container(border=True):
                 user_col, problem_col, action_col, status_col, time_col, ops_col = st.columns(
-                    [1.35, 0.8, 1.05, 0.9, 1.65, 1.5]
+                    [1.35, 0.8, 1.05, 0.9, 1.65, 0.8]
                 )
                 user_col.text(str(row.get("username") or "—"))
                 problem_col.text(str(row.get("problem_id") or "—"))
@@ -844,12 +887,7 @@ def page_audit_logs():
                 ))
                 status_col.markdown(_access_badge(row.get("status")), unsafe_allow_html=True)
                 time_col.text(str(row.get("time") or "—"))
-                detail_col, delete_col = ops_col.columns(2)
-                if detail_col.button("查看详情", key=f"audit-detail-{log_id}",
-                                     width="stretch"):
-                    _show_access_log_detail(row)
-                if delete_col.button("删除", key=f"audit-delete-{log_id}",
-                                     width="stretch"):
+                if ops_col.button("删除", key=f"audit-delete-{log_id}", width="stretch"):
                     st.session_state["audit_confirm_delete"] = log_id
                 if st.session_state.get("audit_confirm_delete") == log_id:
                     st.warning(
@@ -877,14 +915,10 @@ def page_audit_logs():
                         st.session_state.pop("audit_confirm_delete", None)
                         st.rerun()
 
-    prev_col, info_col, next_col = st.columns([1, 2, 1])
-    if prev_col.button("上一页", disabled=st.session_state["audit_page"] <= 1, width="stretch"):
-        st.session_state["audit_page"] -= 1
-        st.rerun()
-    info_col.markdown(f"第 {st.session_state['audit_page']} 页")
-    if next_col.button("下一页", disabled=not has_next, width="stretch"):
-        st.session_state["audit_page"] += 1
-        st.rerun()
+    _pagination_controls(
+        state_key="audit_page", total=total, page_size=page_size,
+        key_prefix="audit-page",
+    )
 
 
 # ---------- 任务 2：题目页面组 ----------
@@ -917,6 +951,11 @@ def page_problem_detail():
 
 
 def page_problem_edit():
+    if st.session_state.get("me", {}).get("role") != "admin":
+        st.error("只有管理员可以编辑题目。")
+        if st.button("← 返回题目列表"):
+            _go("problems")
+        return
     problem_id = st.query_params.get("problem")
     if not problem_id or not _valid_problem_id(problem_id):
         st.error("题目 ID 无效。")
@@ -935,9 +974,16 @@ def _problem_list():
     except ApiError as e:
         friendly_error(e)
         return
-    st.caption(f"共 {len(problems)} 题")
     if st.button("➕ 新建题目", type="primary"):
         _go("problem_new")
+    st.session_state.setdefault("problem_page", 1)
+    page_size = 20
+    total_pages = max(1, math.ceil(len(problems) / page_size))
+    current_page = min(max(1, int(st.session_state["problem_page"])), total_pages)
+    st.session_state["problem_page"] = current_page
+    start = (current_page - 1) * page_size
+    page_problems = problems[start:start + page_size]
+    st.caption(f"共 {len(problems)} 题")
     if not problems:
         st.info("暂无题目，点击上方按钮创建第一道题。")
         return
@@ -946,7 +992,7 @@ def _problem_list():
     head_id, head_title = st.columns([1, 6])
     head_id.markdown("**题目 ID**")
     head_title.markdown("**标题（点击进入详情）**")
-    for problem in problems:
+    for problem in page_problems:
         id_col, title_col = st.columns([1, 6])
         id_col.markdown(f"<span class='oj-mono'>{html.escape(str(problem['id']))}</span>",
                         unsafe_allow_html=True)
@@ -954,6 +1000,10 @@ def _problem_list():
             problem["title"], key=f"problem-title-{problem['id']}", type="tertiary",
         ):
             _go("problem_detail", problem=problem["id"])
+    _pagination_controls(
+        state_key="problem_page", total=len(problems), page_size=page_size,
+        key_prefix="problems-page",
+    )
 
 
 def _problem_detail():
@@ -1006,12 +1056,12 @@ def _problem_detail():
     with right:
         _submit_panel(pid)
 
-    c1, c2, c3 = st.columns(3)
-    if c1.button("✏️ 编辑题目", width="stretch"):
-        _go("problem_edit", problem=pid)
-    if c2.button("📜 本题提交记录", width="stretch"):
-        _go("submissions", problem=pid)
     if me.get("role") == "admin":
+        c1, c2, c3 = st.columns(3)
+        if c1.button("✏️ 编辑题目", width="stretch"):
+            _go("problem_edit", problem=pid)
+        if c2.button("📜 本题提交记录", width="stretch"):
+            _go("submissions", problem=pid)
         if c3.button("🗑 删除题目", width="stretch"):
             st.session_state["confirm_delete"] = pid
         if st.session_state.get("confirm_delete") == pid:
@@ -1053,6 +1103,8 @@ def _problem_detail():
                     st.rerun()
                 except ApiError as e:
                     friendly_error(e)
+    elif st.button("📜 本题提交记录", width="stretch"):
+        _go("submissions", problem=pid)
 
 
 def _problem_form():
@@ -1200,7 +1252,27 @@ def _submit_panel(pid: str):
 
 
 def page_submissions():
-    st.session_state["sub_filter_problem"] = st.query_params.get("problem", "")
+    if "submission_filter_problem" not in st.session_state:
+        st.session_state["submission_filter_problem"] = st.session_state.pop(
+            "sub_filter_problem", "",
+        )
+    if "submission_filter_status" not in st.session_state:
+        st.session_state["submission_filter_status"] = st.session_state.pop(
+            "sub_filter_status", "全部",
+        )
+    if "submission_filter_user" not in st.session_state:
+        st.session_state["submission_filter_user"] = st.session_state.pop(
+            "sub_filter_user", "",
+        )
+    preset_problem = st.query_params.get("problem", "")
+    if preset_problem and st.session_state.get("_sub_preset_problem") != str(preset_problem):
+        st.session_state["submission_filter_problem"] = str(preset_problem)
+        st.session_state.pop("_submission-problem-widget", None)
+        st.session_state["submission_page"] = 1
+        st.session_state["_sub_preset_problem"] = str(preset_problem)
+    elif not preset_problem:
+        st.session_state.pop("_sub_preset_problem", None)
+    st.session_state.setdefault("submission_page", 1)
     st.session_state["sub_view"] = "list"
     st.session_state.pop("sub_id", None)
     _submission_list()
@@ -1221,15 +1293,46 @@ def page_submission_detail():
 def _submission_list():
     me = st.session_state.get("me")
     st.title("📜 评测记录")
-    preset_problem = st.session_state.get("sub_filter_problem", "")
+
+    if st.session_state.get("submission_filter_status") not in {
+        "全部", "pending", "success", "error",
+    }:
+        st.session_state["submission_filter_status"] = "全部"
+    widget_defaults = {
+        "_submission-status-widget": st.session_state["submission_filter_status"],
+        "_submission-problem-widget": st.session_state["submission_filter_problem"],
+        "_submission-user-widget": st.session_state["submission_filter_user"],
+    }
+    for widget_key, value in widget_defaults.items():
+        st.session_state.setdefault(widget_key, value)
+
+    def save_submission_filters():
+        st.session_state["submission_filter_status"] = st.session_state[
+            "_submission-status-widget"
+        ]
+        st.session_state["submission_filter_problem"] = st.session_state[
+            "_submission-problem-widget"
+        ]
+        st.session_state["submission_filter_user"] = st.session_state[
+            "_submission-user-widget"
+        ]
+        st.session_state["submission_page"] = 1
+
     c1, c2 = st.columns(2)
     status = c1.selectbox("状态", ["全部", "pending", "success", "error"],
                           format_func=lambda x: {"全部": "全部", "pending": "等待中",
-                                                 "success": "评测完成", "error": "评测失败"}[x])
-    problem = c2.text_input("题目 ID（可选）", value=preset_problem)
-    user_id = None
+                                                 "success": "评测完成", "error": "评测失败"}[x],
+                          key="_submission-status-widget", on_change=save_submission_filters)
+    problem = c2.text_input(
+        "题目 ID（可选）", key="_submission-problem-widget",
+        on_change=save_submission_filters,
+    )
+    user_id = ""
     if me.get("role") == "admin":
-        user_id = st.text_input("用户 ID（可选，留空查全部）")
+        user_id = st.text_input(
+            "用户 ID（可选，留空查全部）", key="_submission-user-widget",
+            on_change=save_submission_filters,
+        )
     params = {}
     if status != "全部":
         params["status"] = status
@@ -1242,10 +1345,12 @@ def _submission_list():
             st.error("用户 ID 必须是数字。")
             return
         params["user_id"] = int(user_id.strip())
-    # api.md：user_id/problem_id 一级条件不可全空
-    if not params.get("problem_id") and not params.get("user_id"):
-        st.info("管理员查询评测记录需指定筛选条件：请填写题目 ID 或用户 ID。")
+    # 管理员可仅按状态查询；全部条件为空时仍避免无意加载所有历史记录。
+    if not params.get("problem_id") and not params.get("user_id") and not params.get("status"):
+        st.info("请选择状态，或填写题目 ID / 用户 ID 后查询。")
         return
+    page_size = 20
+    params.update({"page": st.session_state["submission_page"], "page_size": page_size})
     try:
         data = api("GET", "/api/submissions/", params=params or None)
     except ApiError as e:
@@ -1255,24 +1360,29 @@ def _submission_list():
     st.caption(f"共 {data.get('total', 0)} 条")
     if not subs:
         st.info("暂无提交记录。")
-        return
-    # 力扣评测列表风格：状态徽章 + 等宽 ID（pending/error 条目仅返回 id/status，其余列占位）
-    is_admin = me.get("role") == "admin"
-    headers = ["ID", "题目"] + (["用户"] if is_admin else []) + ["语言", "状态", "得分", "时间"]
-    rows = "".join(
-        f"<tr><td class='oj-mono'>#{s.get('submission_id')}</td>"
-        f"<td class='oj-mono'>{html.escape(str(s.get('problem_id', '—')))}</td>"
-        + (f"<td>{html.escape(str(s.get('user_id', '—')))}</td>" if is_admin else "")
-        + f"<td>{html.escape(str(s.get('language', '—')))}</td>"
-          f"<td>{_status_badge(s.get('status'))}</td>"
-          f"<td>{s.get('score', '—')}</td>"
-          f"<td>{html.escape(str(s.get('submit_time', '—')))}</td></tr>"
-        for s in subs)
-    st.markdown(_html_table(headers, rows), unsafe_allow_html=True)
-    sel = st.selectbox("查看提交详情", [s["submission_id"] for s in subs],
-                       format_func=lambda x: f"#{x}")
-    if st.button("打开详情"):
-        _go("submission_detail", submission=sel, problem=problem.strip())
+    else:
+        # 力扣评测列表风格：状态徽章 + 等宽 ID。
+        is_admin = me.get("role") == "admin"
+        headers = ["ID", "题目"] + (["用户"] if is_admin else []) + ["语言", "状态", "得分", "时间"]
+        rows = "".join(
+            f"<tr><td class='oj-mono'>#{s.get('submission_id')}</td>"
+            f"<td class='oj-mono'>{html.escape(str(s.get('problem_id', '—')))}</td>"
+            + (f"<td>{html.escape(str(s.get('user_id', '—')))}</td>" if is_admin else "")
+            + f"<td>{html.escape(str(s.get('language', '—')))}</td>"
+              f"<td>{_status_badge(s.get('status'))}</td>"
+              f"<td>{s.get('score', '—')}</td>"
+              f"<td>{html.escape(str(s.get('submit_time', '—')))}</td></tr>"
+            for s in subs)
+        st.markdown(_html_table(headers, rows), unsafe_allow_html=True)
+    _pagination_controls(
+        state_key="submission_page", total=int(data.get("total", 0)), page_size=page_size,
+        key_prefix="submissions-page",
+    )
+    if subs:
+        sel = st.selectbox("查看提交详情", [s["submission_id"] for s in subs],
+                           format_func=lambda x: f"#{x}")
+        if st.button("打开详情"):
+            _go("submission_detail", submission=sel, problem=problem.strip())
 
 
 @st.fragment(run_every=1.5)
@@ -1372,27 +1482,27 @@ def _render_submission(s: dict, show_log: bool):
 # ---------- Advance：AI 智能命题 ----------
 
 def _ai_usage_panel(usage: dict):
-    """R4：Token 用量与费用展示，附计价依据说明（advance.md 要求透明）。"""
+    """R4：简洁展示 Token 用量与任务最终费用。"""
     if not usage:
         st.caption("模型尚未返回用量，当前 Token 用量和费用未知。")
         return
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("输入 Token", usage.get("input_tokens", "—"))
     c2.metric("输出 Token", usage.get("output_tokens", "—"))
     c3.metric("总 Token", usage.get("total_tokens", "—"))
     cost = usage.get("cost")
-    c4, c5, c6 = st.columns(3)
-    c4.metric("费用", f"{cost} {usage.get('currency', '')}" if cost is not None else "—")
-    c5.metric("计价依据", {"provider": "接口返回", "config": "手动配置", "unknown": "未配置", "mixed": "多次调用"}.get(usage.get("price_source"), "—"))
-    c6.metric("用量来源", "字符估算" if usage.get("estimated") else "接口返回")
-    notes = {
-        "provider": "费用由模型接口直接返回。",
-        "config": f"费用 = 输入Token/{usage.get('price_unit')} × {usage.get('input_price')}"
-                  f" + 输出Token/{usage.get('price_unit')} × {usage.get('output_price')}（{usage.get('currency')}）。",
-        "unknown": "未填写输入/输出价格，无法自动计算费用；可在模型配置中填写价格（不同模型、不同时段价格可能不同）。",
-    }
-    st.caption(f"计价依据：{notes.get(usage.get('price_source'), '—')}"
-               f"{'；模型接口未完整返回 Token 用量，缺失部分按字符数/4 估算，包含系统提示词；估算不等同账单。' if usage.get('estimated') else ''}")
+    try:
+        numeric_cost = float(cost)
+        if not math.isfinite(numeric_cost) or numeric_cost < 0:
+            raise ValueError
+        amount = f"{numeric_cost:.8f}".rstrip("0").rstrip(".") or "0"
+        currency = str(usage.get("currency") or "").strip()
+        cost_text = f"{amount} {currency}".strip()
+    except (TypeError, ValueError):
+        cost_text = "—"
+    c4.metric("费用", cost_text)
+    if usage.get("estimated"):
+        st.caption("Token 用量包含估算值。")
 
 
 def _render_ai_result(result: dict, problem_id: str | None):
@@ -1650,7 +1760,15 @@ def _ai_home():
                                          value=str(cfg["output_price"]) if cfg.get("output_price") is not None else "")
             currency = st.selectbox("价格币种", ["CNY", "USD"], index=1 if cfg.get("currency") == "USD" else 0)
             price_unit = st.text_input("计价单位（Token 数）", value=str(cfg.get("price_unit") or 1000000))
-            st.caption("⚠ 不同模型、不同时段的计费价格可能不同（部分厂商设有错峰优惠时段），请按实际调用时段的官方价格填写。")
+            if _supports_deepseek_modes(provider_url):
+                st.caption(
+                    "DeepSeek 官方模型会按实际调用模型、请求时段及缓存命中/未命中 "
+                    "Token 自动计算费用；上方手工价格仅用于其他兼容服务。"
+                )
+            else:
+                st.caption(
+                    "其他兼容服务若不在 usage.cost 返回费用，可成对填写当前模型的输入/输出单价。"
+                )
             if st.form_submit_button("保存配置", width="stretch"):
                 errors = []
                 if not provider_url.strip():
@@ -1671,6 +1789,8 @@ def _ai_home():
                             errors.append(f"{name} 必须是非负数字。")
                     else:
                         prices[name] = None
+                if (prices["input_price"] is None) != (prices["output_price"] is None):
+                    errors.append("输入价格和输出价格必须同时填写，或同时留空。")
                 try:
                     unit = int(price_unit.strip())
                     if unit < 1:
@@ -1731,12 +1851,33 @@ def _ai_home():
 
     # 任务记录
     st.subheader("任务记录")
+    page_size = 20
+    st.session_state.setdefault("ai_task_page", 1)
     tasks = []
+    total_tasks = 0
     try:
-        tasks = api("GET", "/api/ai/problem-tasks/") or []
+        task_data = api("GET", "/api/ai/problem-tasks/", params={
+            "page": st.session_state["ai_task_page"],
+            "page_size": page_size,
+            "include_total": True,
+        }) or []
+        if isinstance(task_data, dict):
+            tasks = task_data.get("tasks", [])
+            total_tasks = int(task_data.get("total", 0))
+        elif isinstance(task_data, list):
+            # 兼容尚未重启的旧后端列表响应。
+            tasks = task_data
+            total_tasks = len(tasks)
     except ApiError:
         pass
     if not tasks:
+        # 若当前页在数据量变化后超出范围，分页组件会先把页码
+        # 校正并 rerun；不能提前 return 后让用户永久卡在空白页。
+        if total_tasks:
+            _pagination_controls(
+                state_key="ai_task_page", total=total_tasks, page_size=page_size,
+                key_prefix="ai-tasks-page",
+            )
         st.info("暂无任务，创建第一个命题任务吧。")
         return
     rows_html = "".join(
@@ -1749,6 +1890,10 @@ def _ai_home():
         for t in tasks)
     st.markdown(_html_table(["ID", "状态", "进度", "模式", "模型", "创建时间"], rows_html),
                 unsafe_allow_html=True)
+    _pagination_controls(
+        state_key="ai_task_page", total=total_tasks, page_size=page_size,
+        key_prefix="ai-tasks-page",
+    )
     sel = st.selectbox("查看任务详情", [t["task_id"] for t in tasks], format_func=lambda x: f"#{x}")
     if st.button("打开详情"):
         _go("ai_task", task=sel)
@@ -1772,12 +1917,12 @@ def _build_pages(me: dict | None) -> dict[str, object]:
             ("profile", page_profile, False),
             ("problem_new", page_problem_new, False),
             ("problem_detail", page_problem_detail, False),
-            ("problem_edit", page_problem_edit, False),
             ("submission_detail", page_submission_detail, False),
             ("ai_task", page_ai_task, False),
         ]
         if me.get("role") == "admin":
             specs += [
+                ("problem_edit", page_problem_edit, False),
                 ("users", page_admin_users, False),
                 ("audit", page_audit_logs, False),
             ]

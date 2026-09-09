@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user, require_admin
 from app.core.errors import ApiError, ok
+from app.core.pagination import MAX_PAGE, MAX_PAGE_SIZE
 from app.database import get_db
 from app.models import RoleChangeLog, Submission, User
 from app.schemas.user import RegisterIn, RoleIn, UsernameIn
@@ -49,8 +50,8 @@ async def create_admin(body: RegisterIn, db: AsyncSession = Depends(get_db), adm
 
 @router.get("/")
 async def list_users(
-    page: int | None = Query(None, ge=1),
-    page_size: int | None = Query(None, ge=1),
+    page: int | None = Query(None, ge=1, le=MAX_PAGE),
+    page_size: int | None = Query(None, ge=1, le=MAX_PAGE_SIZE),
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):

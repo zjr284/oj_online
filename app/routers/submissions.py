@@ -2,8 +2,8 @@
 
 接口与 api.md 一致：
 - POST /api/submissions/                        提交（登录用户；429：1 分钟超 3 次）
-- GET  /api/submissions/                        列表（本人或管理员；user_id/problem_id 一级条件，
-                                                status/page/page_size 二级条件）
+- GET  /api/submissions/                        列表（本人或管理员；user_id/problem_id/status
+                                                可组合筛选，管理员可仅按 status 筛选）
 - GET  /api/submissions/{submission_id}         详情（本人或管理员）
 - PUT  /api/submissions/{submission_id}/rejudge 重新评测（仅管理员，覆盖原记录）
 - GET  /api/submissions/{submission_id}/log     测试点明细（Step 5，含可见性与访问审计）
@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import config
 from app.core.deps import get_current_user, require_admin
 from app.core.errors import ApiError, ok
+from app.core.pagination import MAX_PAGE, MAX_PAGE_SIZE
 from app.core.rate_limit import RateLimiter
 from app.database import get_db
 from app.models import AccessLog, Language, Submission, TestcaseResult, User
@@ -66,7 +67,13 @@ def _submission_item(sub: Submission) -> dict:
     }
 
 
-def _query_int(value: str | None, name: str, *, minimum: int | None = None) -> int | None:
+def _query_int(
+    value: str | None,
+    name: str,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int | None:
     """在业务权限检查后解析查询整数，保证 403 优先于二级参数的 400。"""
     if value is None:
         return None
@@ -76,7 +83,17 @@ def _query_int(value: str | None, name: str, *, minimum: int | None = None) -> i
         raise ApiError(400, f"invalid {name}")
     if minimum is not None and parsed < minimum:
         raise ApiError(400, f"invalid {name}")
+    if maximum is not None and parsed > maximum:
+        raise ApiError(400, f"invalid {name}")
     return parsed
+
+
+def _optional_text(value: str | None) -> str | None:
+    """查询框留空时浏览器可能传空串；统一视为未填写。"""
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
 
 
 @router.post("/")
@@ -116,19 +133,24 @@ async def list_submissions(
 ):
     # 先解析一级身份条件并完成资源权限判断，再校验 page/status 等二级
     # 参数，以满足 api.md 的 403 > 400 异常优先级。
+    user_id = _optional_text(user_id)
+    problem_id = _optional_text(problem_id)
+    status = _optional_text(status)
     requested_user_id = _query_int(user_id, "user_id")
     if (user.role != "admin" and requested_user_id is not None
             and requested_user_id != user.id):
         raise ApiError(403, "permission denied")
 
-    page = _query_int(page, "page", minimum=1)
-    page_size = _query_int(page_size, "page_size", minimum=1)
+    page = _query_int(page, "page", minimum=1, maximum=MAX_PAGE)
+    page_size = _query_int(
+        page_size, "page_size", minimum=1, maximum=MAX_PAGE_SIZE,
+    )
     if page is not None and page_size is None:
         raise ApiError(400, "page_size is required when page is provided")
-    if requested_user_id is None and problem_id is None:
-        raise ApiError(400, "at least one of user_id or problem_id is required")
     if status is not None and status not in ("pending", "success", "error"):
         raise ApiError(400, "invalid status")
+    if requested_user_id is None and problem_id is None and status is None:
+        raise ApiError(400, "at least one filter is required")
     if user.role != "admin":
         requested_user_id = user.id
 

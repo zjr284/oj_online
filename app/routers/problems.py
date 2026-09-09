@@ -58,10 +58,10 @@ async def get_problem(problem_id: str = Depends(valid_problem_id),
 @router.put("/{problem_id}")
 async def update_problem(cfg: ProblemConfig,
                          problem_id: str = Depends(valid_problem_id),
-                         user: User = Depends(get_current_user)):
+                         admin: User = Depends(require_admin)):
     if cfg.id != problem_id:
         raise ApiError(400, "body id must match path id")
-    await store.update(cfg, allow_visibility=user.role == "admin")
+    await store.update(cfg, allow_visibility=True)
     return ok({"id": problem_id}, msg="update success")
 
 

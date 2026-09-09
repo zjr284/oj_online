@@ -29,7 +29,9 @@ echo "== Online Judge 一键启动 =="
 if curl --noproxy '*' -s -o /dev/null --max-time 1 "$BACKEND_URL" 2>/dev/null; then
   echo "✓ 后端已在运行（8000）"
 else
-  .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 &
+  # 开发/验收期间保持后端与 Streamlit 热更新同步，避免前端
+  # 已加载新接口而后端仍停留在旧进程的版本错配。
+  .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload --reload-dir app &
   STARTED+=("$!")
   if wait_url "$BACKEND_URL"; then
     echo "✓ 后端已启动：http://127.0.0.1:8000"

@@ -7,11 +7,12 @@ action 仅为 view_logs；status 记录访问结果（200 允许 / 403 拒绝）
 from app.core.routing import AuthenticatedRoute
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_admin
 from app.core.errors import ApiError, ok
+from app.core.pagination import MAX_PAGE, MAX_PAGE_SIZE
 from app.database import get_db
 from app.models import AccessLog, User
 
@@ -23,8 +24,9 @@ async def list_access_logs(
     user_id: str | None = None,   # api.md：user_id 为 str；SQLite 数值列与数字串比较自动匹配
     username: str | None = None,
     problem_id: str | None = None,
-    page: int | None = Query(None, ge=1),
-    page_size: int | None = Query(None, ge=1),
+    page: int | None = Query(None, ge=1, le=MAX_PAGE),
+    page_size: int | None = Query(None, ge=1, le=MAX_PAGE_SIZE),
+    include_total: bool = False,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
@@ -39,6 +41,13 @@ async def list_access_logs(
     if problem_id is not None:
         conds.append(AccessLog.problem_id == problem_id)
 
+    total = None
+    if include_total:
+        total = await db.scalar(
+            select(func.count()).select_from(AccessLog).outerjoin(
+                User, User.id == AccessLog.user_id,
+            ).where(*conds)
+        ) or 0
     stmt = (
         select(AccessLog, User.username)
         .outerjoin(User, User.id == AccessLog.user_id)
@@ -50,7 +59,7 @@ async def list_access_logs(
     rows = (await db.execute(stmt)).all()
 
     # 保留 user_id 兼容原接口；前端使用 username 展示审计主体。
-    return ok([
+    logs = [
         {
             "log_id": str(log.id),
             "username": username or "已删除用户",
@@ -61,7 +70,9 @@ async def list_access_logs(
             "status": str(log.status),
         }
         for log, username in rows
-    ])
+    ]
+    # 默认仍返回 api.md 规定的数组；前端显式请求总数以计算总页数。
+    return ok({"total": total, "logs": logs} if include_total else logs)
 
 
 @router.delete("/access/{log_id}")

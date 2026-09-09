@@ -16,11 +16,12 @@ app/services/ai_service.py（模型不返回用量时按字符数估算并标注
 """
 from app.core.routing import AuthenticatedRoute
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
 from app.core.deps import get_current_user
 from app.core.errors import ApiError, ok
+from app.core.pagination import MAX_PAGE, MAX_PAGE_SIZE
 from app.models import User
 from app.schemas.ai import AiRefineIn, AiTaskIn, ModelConfigIn
 from app.services import ai_service
@@ -67,9 +68,21 @@ async def create_problem_task(body: AiTaskIn, user: User = Depends(get_current_u
 
 
 @router.get("/problem-tasks/")
-async def list_problem_tasks(user: User = Depends(get_current_user)):
+async def list_problem_tasks(
+    page: int | None = Query(None, ge=1, le=MAX_PAGE),
+    page_size: int | None = Query(None, ge=1, le=MAX_PAGE_SIZE),
+    include_total: bool = False,
+    user: User = Depends(get_current_user),
+):
     """普通用户查询本人任务，管理员查询全部；列表项不含 result。"""
-    return ok(await ai_service.list_tasks(user))
+    if page is not None and page_size is None:
+        raise ApiError(400, "page_size is required when page is provided")
+    return ok(await ai_service.list_tasks(
+        user,
+        page=page,
+        page_size=page_size,
+        include_total=include_total,
+    ))
 
 
 @router.get("/problem-tasks/{task_id}")

@@ -1,5 +1,6 @@
 """Advance：AI 智能命题接口测试（模型调用经 monkeypatch mock，不依赖外部服务）。"""
 import asyncio
+from datetime import datetime, timezone
 import json
 import os
 
@@ -56,6 +57,12 @@ GENERATED = {
 }
 
 FAKE_USAGE = {"prompt_tokens": 100, "completion_tokens": 200}
+FAKE_DEEPSEEK_USAGE = {
+    "prompt_tokens": 100,
+    "completion_tokens": 200,
+    "prompt_cache_hit_tokens": 40,
+    "prompt_cache_miss_tokens": 60,
+}
 
 
 def test_reasoning_model_timeout_has_safe_default():
@@ -152,6 +159,12 @@ async def test_model_config_security(client):
     assert (await client.put("/api/ai/model-config", json=bad)).status_code == 400
     bad = dict(CONFIG, input_price=-1)
     assert (await client.put("/api/ai/model-config", json=bad)).status_code == 400
+    # 仅填一侧价格会产生看似精确、实际错误的费用，必须成对配置。
+    for bad in (
+        dict(CONFIG, input_price=None),
+        dict(CONFIG, output_price=None),
+    ):
+        assert (await client.put("/api/ai/model-config", json=bad)).status_code == 400
 
 
 async def test_deepseek_generation_modes_select_model_and_reasoning(client, monkeypatch):
@@ -171,7 +184,7 @@ async def test_deepseek_generation_modes_select_model_and_reasoning(client, monk
         payloads.append(payload)
         return {
             "choices": [{"message": {"content": json.dumps(GENERATED, ensure_ascii=False)}}],
-            "usage": FAKE_USAGE,
+            "usage": FAKE_DEEPSEEK_USAGE,
         }
 
     monkeypatch.setattr(svc, "_request_model", fake)
@@ -199,6 +212,20 @@ async def test_deepseek_generation_modes_select_model_and_reasoning(client, monk
         assert ("temperature" in payload) is (thinking == "disabled")
         assert "max_tokens" not in payload
         assert len(payloads) - calls_before == (2 if mode == "quality" else 1)
+        # 三档切换了实际模型，不能沿用配置时 deepseek-reasoner 的手工单价。
+        # 应根据实际 Flash/Pro 模型、缓存拆分与本次调用时段自动计费。
+        period = task["usage"]["rate_period"]
+        expected_costs = {
+            "fast": {"off_peak": 0.000992, "peak": 0.001984},
+            "balanced": {"off_peak": 0.000992, "peak": 0.001984},
+            # 高质量模式包含生成和终审两次 Pro 调用。
+            "quality": {"off_peak": 0.005952, "peak": 0.011904},
+        }
+        expected_cost = expected_costs[mode][period]
+        assert task["usage"]["cost"] == expected_cost
+        assert task["usage"]["currency"] == "CNY"
+        assert task["usage"]["billing_model"] == model
+        assert task["usage"]["price_source"] == "deepseek_official"
         if mode == "quality":
             assert "OJ 题目终审员" in payloads[-1]["messages"][0]["content"]
             assert "候选 ProblemConfig JSON" in payloads[-1]["messages"][1]["content"]
@@ -502,6 +529,17 @@ async def test_task_list_and_permissions(client, monkeypatch):
     resp = await client.get("/api/ai/problem-tasks/")
     assert len(resp.json()["data"]) == 1
     assert "result" not in resp.json()["data"][0]
+    paged = (await client.get("/api/ai/problem-tasks/", params={
+        "page": 1, "page_size": 1, "include_total": True,
+    })).json()["data"]
+    assert paged["total"] == 1
+    assert [task["task_id"] for task in paged["tasks"]] == [tid]
+    assert (await client.get(
+        "/api/ai/problem-tasks/", params={"page": 1},
+    )).status_code == 400
+    assert (await client.get(
+        "/api/ai/problem-tasks/", params={"page": 1, "page_size": 101},
+    )).status_code == 400
     # 不存在的任务 → 404
     assert (await client.get("/api/ai/problem-tasks/99999")).status_code == 404
     assert (await client.post("/api/ai/problem-tasks/99999/retry")).status_code == 404
@@ -722,10 +760,12 @@ async def test_auto_pricing(client, monkeypatch):
         return await _wait_task(client, tid)
 
     # 1. 提供方返回费用 → 最优先
-    d = await new_task("some-model", usage={"prompt_tokens": 100, "completion_tokens": 200, "cost": 0.123456})
+    d = await new_task("some-model", usage={
+        "prompt_tokens": 100, "completion_tokens": 200, "cost": 0.123456789123,
+    })
     u = d["usage"]
     assert u["price_source"] == "provider"
-    assert u["cost"] == 0.123456
+    assert u["cost"] == 0.123456789123
 
     # 2. 手动配置价格
     d = await new_task("some-model", manual={"input_price": 1.0, "output_price": 2.0, "price_unit": 1000})
@@ -738,6 +778,39 @@ async def test_auto_pricing(client, monkeypatch):
     u = d["usage"]
     assert u["price_source"] == "unknown"
     assert u["cost"] is None
+
+
+def test_deepseek_official_pricing_uses_cache_split_model_and_beijing_period():
+    """自动费用必须按真实模型、缓存拆分和请求发生时的北京时间计算。"""
+    from app.services import ai_service as svc
+
+    cfg = {
+        "provider_url": "https://api.deepseek.com/chat/completions",
+        "model": "deepseek-v4-flash",
+        "currency": "CNY",
+    }
+    # 2026-09-07 是周一：UTC 02:00 = 北京 10:00（高峰），
+    # UTC 05:00 = 北京 13:00（非高峰）。
+    peak = svc.build_usage(
+        cfg, FAKE_DEEPSEEK_USAGE, "result", "prompt",
+        requested_at=datetime(2026, 9, 7, 2, tzinfo=timezone.utc),
+    )
+    off_peak = svc.build_usage(
+        cfg, FAKE_DEEPSEEK_USAGE, "result", "prompt",
+        requested_at=datetime(2026, 9, 7, 5, tzinfo=timezone.utc),
+    )
+    assert peak["cost"] == 0.001984
+    assert peak["rate_period"] == "peak"
+    assert off_peak["cost"] == 0.000992
+    assert off_peak["rate_period"] == "off_peak"
+
+    # 没有缓存命中/未命中拆分时，不能用统一输入价伪造精确费用。
+    unknown = svc.build_usage(
+        cfg, FAKE_USAGE, "result", "prompt",
+        requested_at=datetime(2026, 9, 7, 5, tzinfo=timezone.utc),
+    )
+    assert unknown["cost"] is None
+    assert unknown["price_source"] == "unknown"
 
 
 async def test_request_model_404_hint(client, monkeypatch):

@@ -16,6 +16,8 @@
   模型接口不返回用量时按 字符数/4 估算，usage.estimated=true 并在页面标注。
 """
 import asyncio
+from datetime import datetime, timezone
+from decimal import Decimal
 import json
 import math
 import os
@@ -26,7 +28,7 @@ from urllib.parse import urlsplit
 import httpx
 from cryptography.fernet import Fernet
 from pydantic import ValidationError
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import config
@@ -48,6 +50,35 @@ TERMINAL_STATUSES = (STATUS_DONE, STATUS_CANCELLED, STATUS_FAILED)
 DEFAULT_PRICE_UNIT = 1_000_000      # api.md 示例计价单位（每百万 Token）
 CURRENCY = "CNY"
 REQUEST_TIMEOUT = config.AI_REQUEST_TIMEOUT_SECONDS  # 模型调用总超时（默认 10 分钟）
+
+# DeepSeek 官方 2026-08-17 起的峰谷价格（每百万 Token）。
+# 中文/CNY 与英文/USD 账户分别使用官方当前公布值。
+DEEPSEEK_PRICES = {
+    "CNY": {
+        "deepseek-v4-flash": {
+            "off_peak": (0.05, 1.5, 4.5),
+            "peak": (0.10, 3.0, 9.0),
+        },
+        "deepseek-v4-pro": {
+            "off_peak": (0.15, 4.5, 13.5),
+            "peak": (0.30, 9.0, 27.0),
+        },
+    },
+    "USD": {
+        "deepseek-v4-flash": {
+            "off_peak": (0.007, 0.22, 0.66),
+            "peak": (0.014, 0.44, 1.32),
+        },
+        "deepseek-v4-pro": {
+            "off_peak": (0.022, 0.66, 1.98),
+            "peak": (0.044, 1.32, 3.96),
+        },
+    },
+}
+DEEPSEEK_MODEL_ALIASES = {
+    "deepseek-chat": "deepseek-v4-flash",
+    "deepseek-reasoner": "deepseek-v4-flash",
+}
 
 GENERATION_PROFILES = {
     "fast": {
@@ -197,17 +228,16 @@ def apply_generation_mode(cfg: dict, mode: str | None) -> dict:
         raise ApiError(400, "generation modes require the official DeepSeek API endpoint")
 
     profile = GENERATION_PROFILES[mode]
-    configured_model = effective["model"]
     effective["model"] = profile["model"]
     effective["_generation_mode"] = mode
     effective["_thinking"] = profile["thinking"]
     effective["_reasoning_effort"] = profile["reasoning_effort"]
 
-    # 手工价格属于配置时填写的模型。预设切换到另一模型时不能沿用，
-    # 否则费用会被错误计算；若提供商直接返回 cost，仍优先使用它。
-    if effective["model"] != configured_model:
-        effective["input_price"] = None
-        effective["output_price"] = None
+    # 手工单价只属于配置时的模型，不能跨模型套用。
+    # DeepSeek 三档的费用由 build_usage 根据实际模型、时段和
+    # 缓存命中/未命中 Token 按官方价格计算。
+    effective["input_price"] = None
+    effective["output_price"] = None
     return effective
 
 
@@ -261,13 +291,15 @@ def build_usage(
     content: str,
     prompt: str,
     system_prompt: str = SYSTEM_PROMPT,
+    requested_at: datetime | None = None,
 ) -> dict:
     """Token 用量与费用统计（api.md 费用公式 + advance.md 计价依据透明）。
 
     费用来源优先级：
     1. provider：模型接口在 usage 中直接返回费用（usage.cost）；
-    2. config：模型配置中填写的 input_price/output_price；
-    3. unknown：未填价格且接口未返回费用，cost 为 None（页面明确标注）。
+    2. deepseek_official：DeepSeek 官方模型按峰/谷时段和缓存 Token 计算；
+    3. config：其他模型使用配置中的 input_price/output_price；
+    4. unknown：无法安全确定费用时 cost 为 None。
     用量缺失时按 字符数/4 估算，estimated=true 标注。
     """
     raw = raw if isinstance(raw, dict) else {}
@@ -275,8 +307,14 @@ def build_usage(
     out = raw.get("completion_tokens", raw.get("output_tokens"))
     def valid_tokens(value):
         return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    cache_hit = raw.get("prompt_cache_hit_tokens")
+    cache_miss = raw.get("prompt_cache_miss_tokens")
+    cache_hit = cache_hit if valid_tokens(cache_hit) else None
+    cache_miss = cache_miss if valid_tokens(cache_miss) else None
     inp = inp if valid_tokens(inp) else None
     out = out if valid_tokens(out) else None
+    if inp is None and cache_hit is not None and cache_miss is not None:
+        inp = cache_hit + cache_miss
     estimated = inp is None or out is None
     if inp is None:
         inp = max(1, math.ceil((len(system_prompt) + len(prompt)) / 4))
@@ -290,23 +328,76 @@ def build_usage(
         "total_tokens": inp + out,
         "estimated": estimated,
     }
+    if cache_hit is not None and cache_miss is not None:
+        base["prompt_cache_hit_tokens"] = cache_hit
+        base["prompt_cache_miss_tokens"] = cache_miss
 
     # 1. 提供方直接计费
     if (isinstance(raw.get("cost"), (int, float)) and not isinstance(raw["cost"], bool)
             and math.isfinite(raw["cost"]) and raw["cost"] >= 0):
         return {
             **base,
-            "cost": round(float(raw["cost"]), 6),
+            "cost": float(raw["cost"]),
             "currency": raw.get("currency") or "USD",
             "price_source": "provider",
         }
 
-    # 2. 用户手动配置价格
-    if cfg.get("input_price") is not None and cfg.get("output_price") is not None:
-        unit = cfg["price_unit"] or DEFAULT_PRICE_UNIT
+    # 2. DeepSeek 官方峰/谷计价。prompt_tokens 价格因缓存
+    # 命中而不同，缺少拆分时不伪造精确费用。
+    model = DEEPSEEK_MODEL_ALIASES.get(
+        str(cfg.get("model") or "").lower(),
+        str(cfg.get("model") or "").lower(),
+    )
+    currency = str(cfg.get("currency") or CURRENCY)
+    model_prices = DEEPSEEK_PRICES.get(currency, {}).get(model)
+    if supports_generation_modes(cfg) and model_prices is not None:
+        if (
+            cache_hit is None
+            or cache_miss is None
+            or cache_hit + cache_miss != inp
+            or estimated
+        ):
+            return {
+                **base,
+                "cost": None,
+                "currency": currency,
+                "billing_model": model,
+                "price_source": "unknown",
+            }
+        at = requested_at or datetime.now(timezone.utc)
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        utc = at.astimezone(timezone.utc)
+        is_peak = utc.weekday() < 5 and (
+            1 <= utc.hour < 4 or 6 <= utc.hour < 10
+        )
+        period = "peak" if is_peak else "off_peak"
+        hit_price, miss_price, output_price = model_prices[period]
+        cost = (
+            Decimal(cache_hit) * Decimal(str(hit_price))
+            + Decimal(cache_miss) * Decimal(str(miss_price))
+            + Decimal(out) * Decimal(str(output_price))
+        ) / Decimal(DEFAULT_PRICE_UNIT)
         return {
             **base,
-            "cost": round(inp / unit * cfg["input_price"] + out / unit * cfg["output_price"], 6),
+            "cost": float(cost),
+            "currency": currency,
+            "price_unit": DEFAULT_PRICE_UNIT,
+            "billing_model": model,
+            "rate_period": period,
+            "price_source": "deepseek_official",
+        }
+
+    # 3. 其他提供商使用用户成对填写的手工价格。
+    if cfg.get("input_price") is not None and cfg.get("output_price") is not None:
+        unit = cfg["price_unit"] or DEFAULT_PRICE_UNIT
+        cost = (
+            Decimal(inp) * Decimal(str(cfg["input_price"]))
+            + Decimal(out) * Decimal(str(cfg["output_price"]))
+        ) / Decimal(unit)
+        return {
+            **base,
+            "cost": float(cost),
             "currency": cfg.get("currency", CURRENCY),
             "price_unit": unit,
             "input_price": cfg["input_price"],
@@ -314,7 +405,7 @@ def build_usage(
             "price_source": "config",
         }
 
-    # 3. 无价格信息
+    # 4. 无价格信息
     return {**base, "cost": None, "currency": cfg.get("currency", CURRENCY), "price_source": "unknown"}
 
 
@@ -332,9 +423,18 @@ def merge_usage(previous: dict | None, current: dict) -> dict:
     for key in ("input_tokens", "output_tokens", "total_tokens"):
         total[key] = sum(call[key] for call in calls)
     total["estimated"] = any(call["estimated"] for call in calls)
-    total["cost"] = (round(sum(call["cost"] for call in calls), 6)
-                     if all(call["cost"] is not None and call["currency"] == current["currency"]
-                            for call in calls) else None)
+    total["cost"] = (
+        float(sum(Decimal(str(call["cost"])) for call in calls))
+        if all(
+            call["cost"] is not None and call["currency"] == current["currency"]
+            for call in calls
+        ) else None
+    )
+    for key in ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens"):
+        if all(isinstance(call.get(key), int) for call in calls):
+            total[key] = sum(call[key] for call in calls)
+        else:
+            total.pop(key, None)
     if total["cost"] is None:
         total["price_source"] = "unknown"
     elif len({call["price_source"] for call in calls}) > 1:
@@ -424,6 +524,7 @@ async def _call_model(
 
     usage = None
     for attempt in (1, 2):
+        requested_at = datetime.now(timezone.utc)
         data = await _request_model(cfg, payload)
         try:
             content = data["choices"][0]["message"]["content"]
@@ -431,7 +532,7 @@ async def _call_model(
             raise RuntimeError("unexpected model response format")
         usage = merge_usage(usage, build_usage(
             cfg, data.get("usage"), content if isinstance(content, str) else "",
-            prompt, system_prompt,
+            prompt, system_prompt, requested_at,
         ))
         if on_usage:
             await on_usage(usage)
@@ -770,22 +871,39 @@ async def get_conversation(user: User, task_id: int) -> list[dict]:
         return chain
 
 
-async def list_tasks(user: User, limit: int = 50) -> list[dict]:
+async def list_tasks(
+    user: User,
+    limit: int = 50,
+    *,
+    page: int | None = None,
+    page_size: int | None = None,
+    include_total: bool = False,
+) -> list[dict] | dict:
     """任务列表（等价扩展，便于 R1 交互）：本人可见自己的任务，管理员可见全部。
 
     列表项不含 result（体积较大），详情经 GET /problem-tasks/{task_id} 获取。
     """
     async with SessionLocal() as db:
-        stmt = select(AiTask).order_by(AiTask.id.desc()).limit(limit)
+        stmt = select(AiTask).order_by(AiTask.id.desc())
         if user.role != "admin":
             stmt = stmt.where(AiTask.user_id == user.id)
+        total = None
+        if include_total:
+            count_stmt = select(func.count()).select_from(AiTask)
+            if user.role != "admin":
+                count_stmt = count_stmt.where(AiTask.user_id == user.id)
+            total = await db.scalar(count_stmt) or 0
+        if page_size is not None:
+            stmt = stmt.offset(((page or 1) - 1) * page_size).limit(page_size)
+        else:
+            stmt = stmt.limit(limit)
         tasks = (await db.scalars(stmt)).all()
         items = []
         for t in tasks:
             d = _serialize(t)
             d.pop("result", None)
             items.append(d)
-        return items
+        return {"total": total, "tasks": items} if include_total else items
 
 
 async def get_task(user: User, task_id: int) -> dict:

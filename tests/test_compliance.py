@@ -113,7 +113,7 @@ async def test_submission_owner_permission_precedes_secondary_filter_validation(
         assert response.json()['code'] == 403
 
 
-async def test_visibility_cannot_be_changed_through_problem_edit(client):
+async def test_regular_user_cannot_edit_problem_or_visibility(client):
     await _setup(client)
     await client.post('/api/users/', json={'username': 'alice', 'password': 'secret1'})
     await login(client, 'alice', 'secret1')
@@ -125,7 +125,8 @@ async def test_visibility_cannot_be_changed_through_problem_edit(client):
     await client.put('/api/problems/1002/log_visibility', json={'public_cases': True})
     await login(client, 'alice', 'secret1')
     response = await client.put('/api/problems/1002', json={**PROBLEM, 'title': 'Edited'})
-    assert response.status_code == 200
+    assert response.status_code == 403
+    assert (await client.get('/api/problems/1002')).json()['data']['title'] == PROBLEM['title']
     assert (await client.get('/api/problems/1002')).json()['data']['public_cases'] is True
     response = await client.put('/api/problems/1002', json={**PROBLEM, 'public_cases': False})
     assert response.status_code == 403
