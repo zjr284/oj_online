@@ -1,4 +1,4 @@
-# Online Judge（实验二：在线评测系统）
+# Online Judge
 
 基于 FastAPI 异步接口的在线评测系统。**覆盖 Step 1–6 与 Advance AI 智能命题**：
 题目管理、评测引擎（资源限制与进程清理）、评测管理（提交/重判/限流）、
